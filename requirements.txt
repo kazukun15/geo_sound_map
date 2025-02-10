@@ -4,3 +4,4 @@ streamlit-folium
 numpy
 scikit-image
 branca
+Nominatim
