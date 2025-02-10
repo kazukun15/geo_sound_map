@@ -7,6 +7,7 @@ import branca.colormap as cm
 import json
 from skimage import measure
 import math
+import csv
 
 # -------------------------------------------------------------
 # 1) セッションステートの初期化 (初回のみ)
@@ -41,7 +42,7 @@ if "prev_r_max" not in st.session_state:
     st.session_state.prev_r_max = None
 
 # -------------------------------------------------------------
-# 2) 方向をfloat角度に変換する関数
+# 2) 方向を float角度に変換する関数
 # -------------------------------------------------------------
 def parse_direction_to_degrees(dir_str):
     dir_str = dir_str.strip().upper()
@@ -61,30 +62,39 @@ def parse_direction_to_degrees(dir_str):
         return float(dir_str)
 
 def fix_speakers_dir(speakers):
-    """JSONインポート後などに呼び出し、文字列があればfloat化する"""
+    """JSONインポート後などに呼び出し、文字列があればfloat化する（備考がある場合にも対応）"""
     fixed = []
     for spk in speakers:
-        lat, lon, dir_list = spk
+        if len(spk) == 3:
+            lat, lon, dir_list = spk
+            remarks = ""
+        elif len(spk) >= 4:
+            lat, lon, dir_list, remarks = spk[0], spk[1], spk[2], spk[3]
+        else:
+            continue
         dir_fixed = []
         for d in dir_list:
             if isinstance(d, (int, float)):
                 dir_fixed.append(d)
             else:
                 dir_fixed.append(parse_direction_to_degrees(d))
-        fixed.append([lat, lon, dir_fixed])
+        entry = [lat, lon, dir_fixed]
+        if remarks:
+            entry.append(remarks)
+        fixed.append(entry)
     return fixed
 
 # -------------------------------------------------------------
-# 3) サイドバー (スピーカー追加/削除,音圧パラメータ,etc)
+# 3) サイドバー (スピーカー追加/削除, 音圧パラメータ, プロジェクト入出力)
 # -------------------------------------------------------------
 st.sidebar.header("操作パネル")
 
-# --- スピーカー追加
-st.sidebar.subheader("スピーカー追加")
+# --- テキスト入力によるスピーカー追加
+st.sidebar.subheader("スピーカー追加 (テキスト入力)")
 new_speaker_input = st.sidebar.text_input(
     "緯度,経度,ホーン1向き,ホーン2向き\n例: 34.2579,133.2072,N,SW"
 )
-if st.sidebar.button("スピーカーを追加"):
+if st.sidebar.button("スピーカーを追加 (テキスト入力)"):
     try:
         lat_str, lon_str, d1_str, d2_str = new_speaker_input.split(",")
         lat_val = float(lat_str.strip())
@@ -95,7 +105,36 @@ if st.sidebar.button("スピーカーを追加"):
         st.session_state.heatmap_data = None
         st.sidebar.success(f"追加: lat={lat_val}, lon={lon_val}, horns=({d1_str},{d2_str})")
     except Exception as e:
-        st.sidebar.error("形式が正しくありません(例: 34.2579,133.2072,N,SW)")
+        st.sidebar.error(f"形式が正しくありません(例: 34.2579,133.2072,N,SW)\nエラー: {e}")
+
+# --- CSVによるスピーカー一括追加
+st.sidebar.subheader("スピーカーCSVインポート")
+uploaded_speaker_csv = st.sidebar.file_uploader("CSVファイルをアップロード", type=["csv"])
+if uploaded_speaker_csv is not None:
+    try:
+        # CSVファイルの内容をデコードして読み込み
+        decoded = uploaded_speaker_csv.read().decode('utf-8').splitlines()
+        reader = csv.reader(decoded)
+        count = 0
+        for row in reader:
+            # 空行はスキップ、ヘッダー行（例："緯度"がある行）はスキップする場合
+            if not row or row[0].strip() == "緯度":
+                continue
+            if len(row) < 3:
+                continue  # 必要最低限の項目がない場合は無視
+            lat_val = float(row[0].strip())
+            lon_val = float(row[1].strip())
+            direction_str = row[2].strip()
+            dir_val = parse_direction_to_degrees(direction_str)
+            # 施設名・備考（存在しなければ空文字）
+            remarks = row[3].strip() if len(row) >= 4 else ""
+            # CSVの場合、両ホーンとも同じ向きとして設定
+            st.session_state.speakers.append([lat_val, lon_val, [dir_val, dir_val], remarks])
+            count += 1
+        st.session_state.heatmap_data = None
+        st.sidebar.success(f"CSVから{count}件のスピーカーを追加しました。")
+    except Exception as e:
+        st.sidebar.error(f"CSVインポートに失敗しました: {e}")
 
 # --- スピーカー削除
 if st.session_state.speakers:
@@ -124,11 +163,8 @@ if (L0 != st.session_state.prev_l0) or (r_max != st.session_state.prev_r_max):
     st.session_state.prev_l0 = L0
     st.session_state.prev_r_max = r_max
 
-# -------------------------------------------------------------
-# 4) プロジェクトの入出力 (JSON)
-# -------------------------------------------------------------
+# --- プロジェクトの入出力 (JSON)
 st.sidebar.subheader("プロジェクトのインポート/エクスポート")
-
 uploaded_project = st.sidebar.file_uploader("JSONをインポート", type=["json"])
 if uploaded_project is not None:
     try:
@@ -156,13 +192,12 @@ if st.sidebar.button("プロジェクトをエクスポート"):
     )
 
 # -------------------------------------------------------------
-# 5) 方位計算 & 指向性モデル
+# 4) 方位計算 & 指向性モデル
 # -------------------------------------------------------------
 def calc_bearing_deg(lat1, lon1, lat2, lon2):
     lat1_rad = math.radians(lat1)
     lat2_rad = math.radians(lat2)
     diff_lon_rad = math.radians(lon2 - lon1)
-
     x = math.sin(diff_lon_rad) * math.cos(lat2_rad)
     y = (math.cos(lat1_rad) * math.sin(lat2_rad)
          - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(diff_lon_rad))
@@ -178,7 +213,7 @@ def directivity_factor(bearing_spk_to_point, horn_angle, half_angle=60):
         return 0.001  # -30dB
 
 # -------------------------------------------------------------
-# 6) (A) 複数スピーカー & 2ホーン 合成 → ヒートマップ & 等高線
+# 5) (A) 複数スピーカー & 2ホーン 合成 → ヒートマップ & 等高線
 # -------------------------------------------------------------
 def calculate_heatmap_and_contours(speakers, L0, r_max, grid_lat, grid_lon):
     Nx, Ny = grid_lat.shape
@@ -186,7 +221,10 @@ def calculate_heatmap_and_contours(speakers, L0, r_max, grid_lat, grid_lon):
     in_range_mask = np.zeros((Nx, Ny), dtype=bool)
 
     for spk in speakers:
-        s_lat, s_lon, dir_list = spk
+        if len(spk) >= 3:
+            s_lat, s_lon, dir_list = spk[0], spk[1], spk[2]
+        else:
+            continue
         for i in range(Nx):
             for j in range(Ny):
                 r = math.sqrt((grid_lat[i, j] - s_lat)**2 + (grid_lon[i, j] - s_lon)**2) * 111320
@@ -198,7 +236,6 @@ def calculate_heatmap_and_contours(speakers, L0, r_max, grid_lat, grid_lon):
                     df = directivity_factor(bearing_deg, horn_angle, 60)
                     p = df * (10**((L0 - 20 * math.log10(r)) / 10))
                     power_spk += p
-
                 if power_spk > 0:
                     power_sum[i, j] += power_spk
                     if r <= r_max:
@@ -207,7 +244,6 @@ def calculate_heatmap_and_contours(speakers, L0, r_max, grid_lat, grid_lon):
     sound_grid = 10 * np.log10(power_sum, where=(power_sum > 0), out=np.full_like(power_sum, np.nan))
     sound_grid[~in_range_mask] = np.nan
 
-    # ヒートマップ用データ
     heat_data = []
     for i in range(Nx):
         for j in range(Ny):
@@ -215,7 +251,6 @@ def calculate_heatmap_and_contours(speakers, L0, r_max, grid_lat, grid_lon):
             if not np.isnan(val):
                 heat_data.append([grid_lat[i, j], grid_lon[i, j], val])
 
-    # 等高線 (60dB/80dB)
     iso_60 = []
     iso_80 = []
     if Nx >= 2 and Ny >= 2:
@@ -229,7 +264,6 @@ def calculate_heatmap_and_contours(speakers, L0, r_max, grid_lat, grid_lon):
                     coords.append((grid_lat[iy, ix], grid_lon[iy, ix]))
             if len(coords) > 1:
                 iso_60.append(coords)
-
         cs80 = measure.find_contours(cgrid, 80)
         for contour in cs80:
             coords = []
@@ -243,13 +277,16 @@ def calculate_heatmap_and_contours(speakers, L0, r_max, grid_lat, grid_lon):
     return heat_data, iso_60, iso_80
 
 # -------------------------------------------------------------
-# 6) (B) 単一点計算 (計測値との比較)
+# 5) (B) 単一点計算 (計測値との比較)
 # -------------------------------------------------------------
 def calculate_single_point_db(speakers, L0, r_max, lat, lon):
     total_power = 0.0
     in_range = False
     for spk in speakers:
-        s_lat, s_lon, dir_list = spk
+        if len(spk) >= 3:
+            s_lat, s_lon, dir_list = spk[0], spk[1], spk[2]
+        else:
+            continue
         r = math.sqrt((lat - s_lat)**2 + (lon - s_lon)**2) * 111320
         if r == 0:
             r = 1
@@ -268,7 +305,7 @@ def calculate_single_point_db(speakers, L0, r_max, lat, lon):
     return 10 * math.log10(total_power)
 
 # -------------------------------------------------------------
-# 7) メッシュ範囲 & ヒートマップ再計算
+# 6) メッシュ範囲 & ヒートマップ再計算
 # -------------------------------------------------------------
 def get_speaker_bounds(speakers, margin=0.01):
     if not speakers:
@@ -280,7 +317,8 @@ def get_speaker_bounds(speakers, margin=0.01):
         )
     lat_list = [s[0] for s in speakers]
     lon_list = [s[1] for s in speakers]
-    return (min(lat_list) - margin, max(lat_list) + margin, min(lon_list) - margin, max(lon_list) + margin)
+    return (min(lat_list) - margin, max(lat_list) + margin,
+            min(lon_list) - margin, max(lon_list) + margin)
 
 lat_min, lat_max, lon_min, lon_max = get_speaker_bounds(st.session_state.speakers, margin=0.01)
 N = 100
@@ -301,28 +339,42 @@ if st.session_state.heatmap_data is None:
         st.session_state.iso_80 = iso80
 
 # -------------------------------------------------------------
-# 8) Folium地図表示
-#    returned_objects=["center","zoom"] によりユーザー操作情報を取得し、セッションステートを更新
+# 7) Folium地図表示
+#    ユーザー操作（ズーム/パン）情報取得とセッションステートの更新
 # -------------------------------------------------------------
 m = folium.Map(
     location=st.session_state.map_center,
     zoom_start=st.session_state.map_zoom
 )
 
-# スピーカーをマーカー表示
+# --- スピーカーのマーカー表示（施設名・備考がある場合はポップアップに表示）
 for spk in st.session_state.speakers:
-    lat_s, lon_s, dirs = spk
-    folium.Marker(
-        location=[lat_s, lon_s],
-        popup=f"Spk:({lat_s:.6f},{lon_s:.6f}) dirs={dirs}"
-    ).add_to(m)
+    if len(spk) >= 3:
+        lat_s = spk[0]
+        lon_s = spk[1]
+        dir_list = spk[2]
+        remarks = spk[3] if len(spk) >= 4 else ""
+        if remarks:
+            popup_str = f"施設名: {remarks}\nSpk: ({lat_s:.6f},{lon_s:.6f})\n向き: {dir_list}"
+        else:
+            popup_str = f"Spk: ({lat_s:.6f},{lon_s:.6f})\n向き: {dir_list}"
+        folium.Marker(
+            location=[lat_s, lon_s],
+            popup=popup_str
+        ).add_to(m)
+
+# --- ズームレベルに応じた HeatMap パラメータの動的調整
+current_zoom = st.session_state.map_zoom
+# 基準値: zoom 17 で radius=15, blur=20
+adjusted_radius = max(5, 15 * (17 / current_zoom))
+adjusted_blur   = max(10, 20 * (17 / current_zoom))
 
 HeatMap(
     st.session_state.heatmap_data,
     min_opacity=0.4,
     max_val=L0,
-    radius=15,
-    blur=20
+    radius=adjusted_radius,
+    blur=adjusted_blur
 ).add_to(m)
 
 for coords in st.session_state.iso_60:
@@ -334,7 +386,6 @@ colormap = cm.LinearColormap(["blue", "green", "yellow", "red"], vmin=L0 - 40, v
 colormap.caption = "音圧レベル (dB)"
 m.add_child(colormap)
 
-# st_foliumで地図表示し、ユーザー操作後のcenter, zoom情報を取得（try/exceptでエラー回避）
 try:
     st_data = st_folium(m, width=800, height=600, returned_objects=["center", "zoom"])
     if st_data and isinstance(st_data, dict):
@@ -353,7 +404,7 @@ except Exception as e:
     st.error(f"地図の操作情報取得中にエラーが発生しました: {e}")
 
 # -------------------------------------------------------------
-# 9) 計測値入力 & 一覧
+# 8) 計測値入力 & 一覧
 # -------------------------------------------------------------
 st.subheader("計測値の直接入力 (lat, lon, 実測dB)")
 inp = st.text_input("例: 34.2579,133.2072,75.0")
@@ -367,7 +418,7 @@ if st.button("計測値を追加"):
             st.session_state.measurements.append([lat_v, lon_v, meas_db])
             st.success(f"追加: ({lat_v},{lon_v}), 実測={meas_db}dB")
         except Exception as e:
-            st.warning("形式が正しくありません (例: 34.2579,133.2072,75.0)")
+            st.warning(f"形式が正しくありません (例: 34.2579,133.2072,75.0)\nエラー: {e}")
     else:
         st.warning("入力が空です")
 
