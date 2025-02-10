@@ -2,6 +2,6 @@ streamlit
 folium
 streamlit-folium
 numpy
-scikit-image
 branca
-Nominatim
+scikit-image
+geopy
