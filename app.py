@@ -137,7 +137,6 @@ if uploaded_speaker_csv is not None:
                 st.sidebar.warning(f"行の読み込みに失敗しました: {row} エラー: {row_e}")
         st.session_state.heatmap_data = None
         st.sidebar.success(f"CSVから{count}件のスピーカーを追加しました。")
-        # CSVアップロード後、ウィジェットをリセットするためキーを削除
         if "speaker_csv" in st.session_state:
             del st.session_state["speaker_csv"]
     except Exception as e:
@@ -157,7 +156,6 @@ if st.sidebar.button("検索", key="address_button"):
                 st.sidebar.error("住所が見つかりませんでした")
             else:
                 st.session_state.map_center = [location.latitude, location.longitude]
-                # dBを計算
                 db_value = calculate_single_point_db(st.session_state.speakers, L0, r_max, location.latitude, location.longitude)
                 if db_value is None:
                     dB_text = "範囲外"
@@ -369,7 +367,7 @@ if st.session_state.heatmap_data is None:
 
 # -------------------------------------------------------------
 # 7) Folium地図表示
-#    ユーザー操作（ズーム/パン/クリック）情報取得とセッションステートの更新
+#    ユーザー操作（ズーム/パン）情報取得とセッションステートの更新
 # -------------------------------------------------------------
 m = folium.Map(
     location=st.session_state.map_center,
@@ -387,18 +385,22 @@ for spk in st.session_state.speakers:
             popup_str = f"施設名: {remarks}\nSpk: ({lat_s:.6f},{lon_s:.6f})\n向き: {dir_list}"
         else:
             popup_str = f"Spk: ({lat_s:.6f},{lon_s:.6f})\n向き: {dir_list}"
-        folium.Marker(location=[lat_s, lon_s], popup=popup_str).add_to(m)
+        folium.Marker(
+            location=[lat_s, lon_s],
+            popup=popup_str
+        ).add_to(m)
 
-# --- 住所検索結果のピンを追加（ある場合）
+# --- 住所検索結果のピンを追加（ドラッグ可能に設定）
 if st.session_state.searched_address:
     addr = st.session_state.searched_address
     folium.Marker(
         location=[addr["lat"], addr["lon"]],
         icon=folium.Icon(color="red", icon="info-sign"),
-        popup=f"住所: {addr['address']}<br>dB: {addr['db']}"
+        popup=f"住所: {addr['address']}<br>dB: {addr['db']}",
+        draggable=True  # ピンを動かせるようにする
     ).add_to(m)
 
-# --- st_folium の呼び出しで、"last_clicked" も取得
+# --- st_folium の呼び出しで、"center", "zoom", "last_clicked" を取得
 st_data = st_folium(m, width=800, height=600, returned_objects=["center", "zoom", "last_clicked"])
 if st_data and isinstance(st_data, dict):
     new_center = st_data.get("center")
@@ -413,7 +415,7 @@ if st_data and isinstance(st_data, dict):
     if new_zoom is not None:
         st.session_state.map_zoom = new_zoom
 
-    # --- クリック位置の処理
+    # --- クリック位置の処理（従来のクリック処理）
     if "last_clicked" in st_data and st_data["last_clicked"]:
         click_lat = st_data["last_clicked"]["lat"]
         click_lon = st_data["last_clicked"]["lng"]
