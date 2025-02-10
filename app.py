@@ -107,31 +107,33 @@ if st.sidebar.button("スピーカーを追加 (テキスト入力)"):
         st.session_state.heatmap_data = None
         st.sidebar.success(f"追加: lat={lat_val}, lon={lon_val}, horns=({d1_str},{d2_str})")
     except Exception as e:
-        st.sidebar.error(f"形式が正しくありません(例: 34.2579,133.2072,N,SW)\nエラー: {e}")
+        st.sidebar.error(f"形式が正しくありません (例: 34.2579,133.2072,N,SW)\nエラー: {e}")
 
-# --- CSVによるスピーカー一括追加
-st.sidebar.subheader("スピーカーCSVインポート")
-uploaded_speaker_csv = st.sidebar.file_uploader("CSVファイルをアップロード", type=["csv"])
+# --- CSVによるスピーカー一括追加（ヘッダーなし）
+# 各行は「緯度,経度,方向,備考」の順番になっているものとする
+st.sidebar.subheader("スピーカーCSVインポート（ヘッダーなし）")
+uploaded_speaker_csv = st.sidebar.file_uploader("CSVファイルをアップロード（ヘッダーなし）", type=["csv"])
 if uploaded_speaker_csv is not None:
     try:
-        # 'utf-8-sig'を指定してBOMを除去
+        # BOM除去のため 'utf-8-sig' を指定
         decoded = uploaded_speaker_csv.read().decode('utf-8-sig').splitlines()
-        reader = csv.DictReader(decoded)
+        reader = csv.reader(decoded)
         count = 0
         for row in reader:
-            # ヘッダーに記載されているキーが大文字の場合に備え、すべて小文字に変換
-            row = {k.lower(): v for k, v in row.items()}
+            if not row or len(row) < 3:
+                continue
             try:
-                lat_val = float(row["latitude"].strip())
-                lon_val = float(row["longitude"].strip())
-                direction_field = row["direction"].strip()
-                # directionフィールド内にカンマがある場合は分割して各ホーンの向きとする
+                lat_val = float(row[0].strip())
+                lon_val = float(row[1].strip())
+                direction_field = row[2].strip()
+                # 方向フィールドにカンマが含まれる場合は分割し各ホーンの向きに変換
                 if "," in direction_field:
                     directions = [d.strip() for d in direction_field.split(",")]
                     horn_directions = [parse_direction_to_degrees(d) for d in directions]
                 else:
                     horn_directions = [parse_direction_to_degrees(direction_field)] * 2
-                remarks = row.get("remarks", "").strip()
+                # 備考は存在すれば取得、なければ空文字
+                remarks = row[3].strip() if len(row) >= 4 else ""
                 st.session_state.speakers.append([lat_val, lon_val, horn_directions, remarks])
                 count += 1
             except Exception as row_e:
@@ -353,7 +355,7 @@ m = folium.Map(
     zoom_start=st.session_state.map_zoom
 )
 
-# --- スピーカーのマーカー表示（施設名・備考がある場合はポップアップに表示）
+# --- スピーカーのマーカー表示（備考がある場合はポップアップに表示）
 for spk in st.session_state.speakers:
     if len(spk) >= 3:
         lat_s = spk[0]
