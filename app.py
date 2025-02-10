@@ -62,7 +62,10 @@ def parse_direction_to_degrees(dir_str):
         return float(dir_str)
 
 def fix_speakers_dir(speakers):
-    """JSONインポート後などに呼び出し、文字列があればfloat化する（備考がある場合にも対応）"""
+    """
+    JSONインポート後などに呼び出し、文字列があればfloat化する。
+    備考がある場合にも対応。
+    """
     fixed = []
     for spk in speakers:
         if len(spk) == 3:
@@ -112,13 +115,17 @@ st.sidebar.subheader("スピーカーCSVインポート")
 uploaded_speaker_csv = st.sidebar.file_uploader("CSVファイルをアップロード", type=["csv"])
 if uploaded_speaker_csv is not None:
     try:
-        # CSVファイルの内容をデコードして読み込み
-        decoded = uploaded_speaker_csv.read().decode('utf-8').splitlines()
+        # 'utf-8-sig'を指定してBOMを除去
+        decoded = uploaded_speaker_csv.read().decode('utf-8-sig').splitlines()
         reader = csv.reader(decoded)
         count = 0
         for row in reader:
-            # 空行はスキップ、ヘッダー行（例："緯度"がある行）はスキップする場合
-            if not row or row[0].strip() == "緯度":
+            # 空行はスキップ
+            if not row:
+                continue
+            # ヘッダー行のスキップ（"latitude" または "緯度"が含まれる場合）
+            first_cell = row[0].strip().lower().replace('"', '')
+            if first_cell in ["latitude", "緯度"]:
                 continue
             if len(row) < 3:
                 continue  # 必要最低限の項目がない場合は無視
@@ -264,6 +271,7 @@ def calculate_heatmap_and_contours(speakers, L0, r_max, grid_lat, grid_lon):
                     coords.append((grid_lat[iy, ix], grid_lon[iy, ix]))
             if len(coords) > 1:
                 iso_60.append(coords)
+
         cs80 = measure.find_contours(cgrid, 80)
         for contour in cs80:
             coords = []
