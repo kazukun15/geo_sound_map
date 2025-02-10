@@ -110,12 +110,16 @@ if st.sidebar.button("スピーカーを追加 (テキスト入力)"):
         st.sidebar.error(f"形式が正しくありません (例: 34.2579,133.2072,N,SW)\nエラー: {e}")
 
 # --- CSVによるスピーカー一括追加（ヘッダーなし）
-# 各行は「緯度,経度,方向,備考」の順番になっているものとする
+# 各行は「緯度,経度,方向,備考」の順番であるものとする
 st.sidebar.subheader("スピーカーCSVインポート（ヘッダーなし）")
-uploaded_speaker_csv = st.sidebar.file_uploader("CSVファイルをアップロード（ヘッダーなし）", type=["csv"])
+uploaded_speaker_csv = st.sidebar.file_uploader(
+    "CSVファイルをアップロード（ヘッダーなし）", 
+    type=["csv"],
+    key="speaker_csv"
+)
 if uploaded_speaker_csv is not None:
     try:
-        # BOM除去のため 'utf-8-sig' を指定
+        # 'utf-8-sig'でBOM除去
         decoded = uploaded_speaker_csv.read().decode('utf-8-sig').splitlines()
         reader = csv.reader(decoded)
         count = 0
@@ -126,7 +130,7 @@ if uploaded_speaker_csv is not None:
                 lat_val = float(row[0].strip())
                 lon_val = float(row[1].strip())
                 direction_field = row[2].strip()
-                # 方向フィールドにカンマが含まれる場合は分割し各ホーンの向きに変換
+                # 方向フィールドにカンマが含まれる場合は分割し、各ホーンの向きに変換
                 if "," in direction_field:
                     directions = [d.strip() for d in direction_field.split(",")]
                     horn_directions = [parse_direction_to_degrees(d) for d in directions]
@@ -140,6 +144,9 @@ if uploaded_speaker_csv is not None:
                 st.sidebar.warning(f"行の読み込みに失敗しました: {row} エラー: {row_e}")
         st.session_state.heatmap_data = None
         st.sidebar.success(f"CSVから{count}件のスピーカーを追加しました。")
+        # CSVアップロード後はセッションステートからキーを削除してウィジェットをリセット
+        if "speaker_csv" in st.session_state:
+            del st.session_state["speaker_csv"]
     except Exception as e:
         st.sidebar.error(f"CSVインポートに失敗しました: {e}")
 
