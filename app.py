@@ -131,12 +131,17 @@ if uploaded_speaker_csv is not None:
                 continue  # 必要最低限の項目がない場合は無視
             lat_val = float(row[0].strip())
             lon_val = float(row[1].strip())
-            direction_str = row[2].strip()
-            dir_val = parse_direction_to_degrees(direction_str)
+            direction_field = row[2].strip()
+            # directionフィールド内にカンマがある場合は分割して各ホーンの向きとする
+            if "," in direction_field:
+                directions = [d.strip() for d in direction_field.split(",")]
+                # 方向リストを数値に変換
+                horn_directions = [parse_direction_to_degrees(d) for d in directions]
+            else:
+                horn_directions = [parse_direction_to_degrees(direction_field)] * 2
             # 施設名・備考（存在しなければ空文字）
             remarks = row[3].strip() if len(row) >= 4 else ""
-            # CSVの場合、両ホーンとも同じ向きとして設定
-            st.session_state.speakers.append([lat_val, lon_val, [dir_val, dir_val], remarks])
+            st.session_state.speakers.append([lat_val, lon_val, horn_directions, remarks])
             count += 1
         st.session_state.heatmap_data = None
         st.sidebar.success(f"CSVから{count}件のスピーカーを追加しました。")
