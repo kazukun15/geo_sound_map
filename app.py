@@ -63,8 +63,7 @@ def parse_direction_to_degrees(dir_str):
 
 def fix_speakers_dir(speakers):
     """
-    JSONインポート後などに呼び出し、文字列があればfloat化する。
-    備考がある場合にも対応。
+    JSONインポート後などに呼び出し、文字列があればfloat化する（備考付きの場合にも対応）
     """
     fixed = []
     for spk in speakers:
@@ -117,32 +116,24 @@ if uploaded_speaker_csv is not None:
     try:
         # 'utf-8-sig'を指定してBOMを除去
         decoded = uploaded_speaker_csv.read().decode('utf-8-sig').splitlines()
-        reader = csv.reader(decoded)
+        reader = csv.DictReader(decoded)
         count = 0
         for row in reader:
-            # 空行はスキップ
-            if not row:
-                continue
-            # ヘッダー行のスキップ（"latitude" または "緯度"が含まれる場合）
-            first_cell = row[0].strip().lower().replace('"', '')
-            if first_cell in ["latitude", "緯度"]:
-                continue
-            if len(row) < 3:
-                continue  # 必要最低限の項目がない場合は無視
-            lat_val = float(row[0].strip())
-            lon_val = float(row[1].strip())
-            direction_field = row[2].strip()
-            # directionフィールド内にカンマがある場合は分割して各ホーンの向きとする
-            if "," in direction_field:
-                directions = [d.strip() for d in direction_field.split(",")]
-                # 方向リストを数値に変換
-                horn_directions = [parse_direction_to_degrees(d) for d in directions]
-            else:
-                horn_directions = [parse_direction_to_degrees(direction_field)] * 2
-            # 施設名・備考（存在しなければ空文字）
-            remarks = row[3].strip() if len(row) >= 4 else ""
-            st.session_state.speakers.append([lat_val, lon_val, horn_directions, remarks])
-            count += 1
+            try:
+                lat_val = float(row["latitude"].strip())
+                lon_val = float(row["longitude"].strip())
+                direction_field = row["direction"].strip()
+                # directionフィールド内にカンマがある場合は分割して各ホーンの向きとする
+                if "," in direction_field:
+                    directions = [d.strip() for d in direction_field.split(",")]
+                    horn_directions = [parse_direction_to_degrees(d) for d in directions]
+                else:
+                    horn_directions = [parse_direction_to_degrees(direction_field)] * 2
+                remarks = row.get("remarks", "").strip()
+                st.session_state.speakers.append([lat_val, lon_val, horn_directions, remarks])
+                count += 1
+            except Exception as row_e:
+                st.sidebar.warning(f"行の読み込みに失敗しました: {row} エラー: {row_e}")
         st.session_state.heatmap_data = None
         st.sidebar.success(f"CSVから{count}件のスピーカーを追加しました。")
     except Exception as e:
