@@ -119,6 +119,8 @@ if uploaded_speaker_csv is not None:
         reader = csv.DictReader(decoded)
         count = 0
         for row in reader:
+            # ヘッダーに記載されているキーが大文字の場合に備え、すべて小文字に変換
+            row = {k.lower(): v for k, v in row.items()}
             try:
                 lat_val = float(row["latitude"].strip())
                 lon_val = float(row["longitude"].strip())
