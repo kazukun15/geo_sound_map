@@ -9,6 +9,9 @@ from skimage import measure
 import math
 import csv
 
+# 住所検索で使用するため geopy をインポート
+from geopy.geocoders import Nominatim
+
 # -------------------------------------------------------------
 # 1) セッションステートの初期化 (初回のみ)
 # -------------------------------------------------------------
@@ -87,7 +90,7 @@ def fix_speakers_dir(speakers):
     return fixed
 
 # -------------------------------------------------------------
-# 3) サイドバー (スピーカー追加/削除, 音圧パラメータ, プロジェクト入出力)
+# 3) サイドバー (スピーカー追加/削除, 音圧パラメータ, プロジェクト入出力, 住所検索)
 # -------------------------------------------------------------
 st.sidebar.header("操作パネル")
 
@@ -112,7 +115,7 @@ if st.sidebar.button("スピーカーを追加 (テキスト入力)"):
 # --- CSVによるスピーカー一括追加（ヘッダーなし）
 # 各行は「緯度,経度,方向,備考」の順番になっているものとする
 st.sidebar.subheader("スピーカーCSVインポート（ヘッダーなし）")
-uploaded_speaker_csv = st.sidebar.file_uploader("CSVファイルをアップロード（ヘッダーなし）", type=["csv"])
+uploaded_speaker_csv = st.sidebar.file_uploader("CSVファイルをアップロード（ヘッダーなし）", type=["csv"], key="speaker_csv")
 if uploaded_speaker_csv is not None:
     try:
         # BOM除去のため 'utf-8-sig' を指定
@@ -140,8 +143,47 @@ if uploaded_speaker_csv is not None:
                 st.sidebar.warning(f"行の読み込みに失敗しました: {row} エラー: {row_e}")
         st.session_state.heatmap_data = None
         st.sidebar.success(f"CSVから{count}件のスピーカーを追加しました。")
+        # CSVアップロード後はウィジェットをリセットするためキーを削除
+        if "speaker_csv" in st.session_state:
+            del st.session_state["speaker_csv"]
     except Exception as e:
         st.sidebar.error(f"CSVインポートに失敗しました: {e}")
+
+# --- 住所検索機能
+st.sidebar.subheader("住所検索")
+address = st.sidebar.text_input("住所を入力してください", key="address_search")
+if st.sidebar.button("検索", key="address_button"):
+    if address.strip() == "":
+        st.sidebar.error("住所を入力してください")
+    else:
+        try:
+            geolocator = Nominatim(user_agent="my_app")
+            location = geolocator.geocode(address)
+            if location is None:
+                st.sidebar.error("住所が見つかりませんでした")
+            else:
+                # 取得した座標をマップ中心に設定
+                st.session_state.map_center = [location.latitude, location.longitude]
+                # dB算出（計測値との比較関数を利用）
+                db_value = None
+                try:
+                    db_value = calculate_single_point_db(st.session_state.speakers, L0, r_max, location.latitude, location.longitude)
+                except Exception as ex:
+                    db_value = None
+                if db_value is None:
+                    dB_text = "範囲外"
+                else:
+                    dB_text = f"{db_value:.2f} dB"
+                # 住所検索結果をセッションステートに保存
+                st.session_state.searched_address = {
+                    "address": address,
+                    "lat": location.latitude,
+                    "lon": location.longitude,
+                    "db": dB_text
+                }
+                st.sidebar.success(f"{address} の位置: ({location.latitude:.6f}, {location.longitude:.6f})  dB: {dB_text}")
+        except Exception as ge:
+            st.sidebar.error(f"住所検索に失敗しました: {ge}")
 
 # --- スピーカー削除
 if st.session_state.speakers:
@@ -370,6 +412,15 @@ for spk in st.session_state.speakers:
             location=[lat_s, lon_s],
             popup=popup_str
         ).add_to(m)
+
+# --- 住所検索結果のピンを追加（ある場合）
+if "searched_address" in st.session_state:
+    addr = st.session_state.searched_address
+    folium.Marker(
+        location=[addr["lat"], addr["lon"]],
+        icon=folium.Icon(color="red", icon="info-sign"),
+        popup=f"住所: {addr['address']}<br>dB: {addr['db']}"
+    ).add_to(m)
 
 # --- ズームレベルに応じた HeatMap パラメータの動的調整
 current_zoom = st.session_state.map_zoom
