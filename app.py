@@ -370,7 +370,8 @@ def main():
         gemini_query = st.text_input("Gemini に問い合わせる内容")
         if st.button("Gemini API を実行"):
             result = call_gemini_api(gemini_query)
-            st.write("Gemini API のレスポンス:", result)
+            st.session_state.gemini_result = result
+            st.success("Gemini API の実行が完了しました")
     
     # メインパネル：地図とヒートマップの表示
     col1, col2 = st.columns([3, 1])
@@ -412,6 +413,14 @@ def main():
         st.write("計測情報:", st.session_state.measurements)
         count = len(st.session_state.heatmap_data) if st.session_state.heatmap_data else 0
         st.write("ヒートマップデータの件数:", count)
+    
+    # 地図の下部にGemini APIの回答を表示する領域
+    st.markdown("---")
+    st.subheader("Gemini API の回答")
+    if "gemini_result" in st.session_state:
+        st.json(st.session_state.gemini_result)
+    else:
+        st.info("Gemini API の回答はまだありません。")
 
 if __name__ == "__main__":
     try:
