@@ -23,12 +23,6 @@ DIRECTION_MAPPING = {"N": 0, "E": 90, "S": 180, "W": 270, "NE": 45, "SE": 135, "
 def parse_direction(direction_str):
     """
     文字列から方向（度数）に変換する関数。
-    
-    Parameters:
-        direction_str (str): 入力の方向文字列。例: "N", "45", "SW"
-    
-    Returns:
-        float: 変換された角度（度数）
     """
     direction_str = direction_str.strip().upper()
     if direction_str in DIRECTION_MAPPING:
@@ -45,14 +39,6 @@ def parse_direction(direction_str):
 def load_csv(file):
     """
     CSVファイルを読み込み、スピーカーと計測データを抽出する関数。
-    
-    Parameters:
-        file: アップロードされたCSVファイル
-    
-    Returns:
-        tuple: (speakers, measurements)
-            speakers: [ [lat, lon, [direction1, direction2, ...]], ... ]
-            measurements: [ [lat, lon, decibel], ... ]
     """
     try:
         df = pd.read_csv(file)
@@ -73,13 +59,6 @@ def load_csv(file):
 def export_csv(data, columns):
     """
     スピーカー情報または計測情報をCSV形式にエクスポートする関数。
-    
-    Parameters:
-        data: エクスポートするデータリスト
-        columns: CSVのカラム名リスト
-    
-    Returns:
-        bytes: CSVファイルのバイナリデータ
     """
     rows = []
     for entry in data:
@@ -107,16 +86,6 @@ def export_csv(data, columns):
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
     各グリッド点における音圧レベルを計算し、2D配列（sound_grid）として返す関数。
-    
-    Parameters:
-        speakers (list): スピーカーリスト（各要素は [lat, lon, [directions]]）
-        L0 (float): 初期音圧レベル (dB)
-        r_max (float): 最大伝播距離 (m)
-        grid_lat (ndarray): 緯度のグリッド（2D配列）
-        grid_lon (ndarray): 経度のグリッド（2D配列）
-    
-    Returns:
-        ndarray: 各グリッド点における音圧レベル（dB）の2D配列
     """
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
@@ -146,35 +115,18 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
 def calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
     """
     ヒートマップ用のデータリストを作成する関数。
-    
-    Parameters:
-        speakers (list): スピーカーリスト
-        L0 (float): 初期音圧レベル (dB)
-        r_max (float): 最大伝播距離 (m)
-        grid_lat, grid_lon (ndarray): 緯度・経度のグリッド
-    
-    Returns:
-        list: ヒートマップデータのリスト [ [lat, lon, sound_level], ... ]
     """
     sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     Nx, Ny = grid_lat.shape
-    heat_data = [[grid_lat[i, j], grid_lon[i, j], sound_grid[i, j]] 
-                 for i in range(Nx) for j in range(Ny) if not np.isnan(sound_grid[i, j])]
+    heat_data = [
+        [grid_lat[i, j], grid_lon[i, j], sound_grid[i, j]]
+        for i in range(Nx) for j in range(Ny) if not np.isnan(sound_grid[i, j])
+    ]
     return heat_data
 
 def calculate_objective(speakers, target, L0, r_max, grid_lat, grid_lon):
     """
     目標音圧レベルとの差の二乗平均誤差（MSE）を計算する関数。
-    
-    Parameters:
-        speakers (list): スピーカーリスト
-        target (float): 目標とする音圧レベル (dB)
-        L0 (float): 初期音圧レベル (dB)
-        r_max (float): 最大伝播距離 (m)
-        grid_lat, grid_lon (ndarray): 緯度・経度のグリッド
-    
-    Returns:
-        float: MSEの値
     """
     sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     valid = ~np.isnan(sound_grid)
@@ -183,19 +135,7 @@ def calculate_objective(speakers, target, L0, r_max, grid_lat, grid_lon):
 
 def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, iterations=10, delta=0.0001):
     """
-    各スピーカーの位置を微調整し、目標音圧レベルとの差（二乗誤差）を最小化する自動最適配置アルゴリズム。
-    
-    Parameters:
-        speakers (list): 現在のスピーカーリスト（各要素は [lat, lon, directions]）
-        target (float): 目標音圧レベル (dB)
-        L0 (float): 初期音圧レベル (dB)
-        r_max (float): 最大伝播距離 (m)
-        grid_lat, grid_lon (ndarray): 緯度・経度のグリッド
-        iterations (int): 試行回数
-        delta (float): 座標変更の刻み幅
-    
-    Returns:
-        list: 最適化後のスピーカーリスト
+    スピーカーの位置を微調整し、目標音圧レベルとの差を最小化する自動最適配置アルゴリズム。
     """
     optimized = [list(spk) for spk in speakers]
     current_obj = calculate_objective(optimized, target, L0, r_max, grid_lat, grid_lon)
@@ -227,15 +167,7 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, 
 def generate_gemini_prompt(user_query):
     """
     ユーザーの問い合わせと地図上のスピーカー配置、音圧分布の概要を組み合わせたプロンプトを生成する。
-    ユーザーの意図を反映しつつ、Gemini が処理しやすい情報量に最適化します。
-    
-    Parameters:
-        user_query (str): ユーザーの問い合わせ
-    
-    Returns:
-        str: Gemini API に送信するプロンプト
     """
-    # スピーカー情報の要約：多数ある場合は最初の5件のみ表示し、残りは件数で要約
     speakers = st.session_state.speakers if "speakers" in st.session_state else []
     num_speakers = len(speakers)
     if num_speakers > 5:
@@ -251,8 +183,7 @@ def generate_gemini_prompt(user_query):
     else:
         speaker_info = "現在、スピーカーは配置されていません。\n"
     
-    sound_range = f"{st.session_state.L0-40}dB ~ {st.session_state.L0}dB" if "L0" in st.session_state else "情報なし"
-    
+    sound_range = f"{st.session_state.L0-40}dB ~ {st.session_state.L0}dB"
     prompt = (
         f"{speaker_info}"
         f"現在の音圧レベルの範囲は概ね {sound_range} です。\n"
@@ -264,12 +195,6 @@ def generate_gemini_prompt(user_query):
 def call_gemini_api(query):
     """
     Gemini API に対してクエリを送信する関数。
-    
-    Parameters:
-        query (str): 送信するプロンプト
-    
-    Returns:
-        dict: API のレスポンス
     """
     headers = {"Content-Type": "application/json"}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
@@ -287,12 +212,34 @@ def call_gemini_api(query):
         return {}
 
 # ----------------------------------------------------------------
+# Module: Gemini Status Check
+# ----------------------------------------------------------------
+def check_gemini_status():
+    """
+    Gemini APIのステータスを簡易チェックする関数。
+    - 正常: 200番台
+    - 異常: 200番台以外、または例外
+    戻り値:
+        status (str): "正常" or "異常"
+        detail (str): 正常なら空文字、異常なら理由
+    """
+    # ここではモデル一覧エンドポイントに GET を送ってみる例
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
+    try:
+        response = requests.get(url, timeout=10)
+        if 200 <= response.status_code < 300:
+            return "正常", ""
+        else:
+            return "異常", f"HTTPステータスコード: {response.status_code}"
+    except requests.exceptions.RequestException as e:
+        return "異常", str(e)
+
+# ----------------------------------------------------------------
 # Module: Main Application (UI)
 # ----------------------------------------------------------------
 def main():
     """
     防災スピーカー音圧可視化マップのメインアプリケーション。
-    スピーカー管理、ヒートマップ表示、自動最適配置、Gemini API 呼び出しを統合。
     """
     st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
     st.title("防災スピーカー音圧可視化マップ")
@@ -315,6 +262,15 @@ def main():
     with st.sidebar:
         st.header("操作パネル")
         
+        # --- Geminiステータスを小さく表示 ---
+        status, detail = check_gemini_status()
+        if status == "正常":
+            st.success("Geminiステータス: 正常")
+        else:
+            st.error(f"Geminiステータス: 異常\n理由: {detail}")
+        st.write("---")
+        
+        # CSVアップロード
         uploaded_file = st.file_uploader("CSVファイルをアップロード", type=["csv"])
         if uploaded_file:
             speakers, measurements = load_csv(uploaded_file)
@@ -325,6 +281,7 @@ def main():
             st.success("CSVファイルを読み込みました。")
             st.session_state.heatmap_data = None
         
+        # スピーカー追加
         new_speaker = st.text_input("スピーカー追加 (緯度,経度,方向1,方向2...)", placeholder="例: 34.2579,133.2072,N,E")
         if st.button("スピーカー追加"):
             try:
@@ -337,6 +294,7 @@ def main():
             except (ValueError, IndexError) as e:
                 st.error("スピーカーの追加に失敗しました。形式が正しくない可能性があります。(緯度,経度,方向...)")
         
+        # スピーカー削除機能
         if st.session_state.speakers:
             options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" for i, spk in enumerate(st.session_state.speakers)]
             selected_index = st.selectbox("削除するスピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
@@ -350,14 +308,17 @@ def main():
         else:
             st.info("削除可能なスピーカーがありません。")
         
+        # スピーカーリセット
         if st.button("スピーカーリセット"):
             st.session_state.speakers = []
             st.session_state.heatmap_data = None
             st.success("スピーカーをリセットしました")
         
+        # パラメータ調整
         st.session_state.L0 = st.slider("初期音圧レベル (dB)", 50, 100, st.session_state.L0)
         st.session_state.r_max = st.slider("最大伝播距離 (m)", 100, 2000, st.session_state.r_max)
         
+        # 自動最適配置
         target_default = st.session_state.L0 - 20
         target_level = st.slider("目標音圧レベル (dB)", st.session_state.L0 - 40, st.session_state.L0, target_default)
         if st.button("自動最適配置を実行"):
@@ -383,6 +344,7 @@ def main():
             except Exception as e:
                 st.error(f"最適配置アルゴリズムの実行中にエラーが発生しました: {e}")
         
+        # Gemini API 呼び出し
         st.subheader("Gemini API 呼び出し")
         gemini_query = st.text_input("Gemini に問い合わせる内容")
         if st.button("Gemini API を実行"):
@@ -391,6 +353,7 @@ def main():
             st.session_state.gemini_result = result
             st.success("Gemini API の実行が完了しました")
     
+    # メインパネル
     col1, col2 = st.columns([3, 1])
     with col1:
         lat_min = st.session_state.map_center[0] - 0.01
@@ -428,6 +391,7 @@ def main():
     if "gemini_result" in st.session_state:
         result = st.session_state.gemini_result
         answer_text = ""
+        # 複数キーを試す
         if "candidates" in result and len(result["candidates"]) > 0:
             candidate = result["candidates"][0]
             answer_text = candidate.get("output", candidate.get("text", candidate.get("generatedText", "")))
