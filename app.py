@@ -433,7 +433,7 @@ def main():
     # Gemini API の回答表示 (説明部分 & JSON 全体)
     # -------------------------------------------------------
     st.markdown("---")
-    st.subheader("AIからの設置提案）")
+    st.subheader("AIからの設置提案")
     if "gemini_result" in st.session_state:
         result = st.session_state.gemini_result
         
