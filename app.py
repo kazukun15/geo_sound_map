@@ -227,6 +227,7 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, 
 def generate_gemini_prompt(user_query):
     """
     ユーザーの問い合わせと地図上のスピーカー配置、音圧分布の概要を組み合わせたプロンプトを生成する。
+    ユーザーの意図を反映しつつ、Gemini が処理しやすい情報量に最適化します。
     
     Parameters:
         user_query (str): ユーザーの問い合わせ
@@ -234,20 +235,29 @@ def generate_gemini_prompt(user_query):
     Returns:
         str: Gemini API に送信するプロンプト
     """
-    speaker_info = ""
-    if st.session_state.speakers:
-        speaker_info = "現在の地図には以下のスピーカーが配置されています:\n"
-        for idx, spk in enumerate(st.session_state.speakers):
+    # スピーカー情報の要約：多数ある場合は最初の5件のみ表示し、残りは件数で要約
+    speakers = st.session_state.speakers if "speakers" in st.session_state else []
+    num_speakers = len(speakers)
+    if num_speakers > 5:
+        speaker_list = speakers[:5]
+        speaker_info = "以下のスピーカーが配置されています:\n"
+        for idx, spk in enumerate(speaker_list):
+            speaker_info += f"{idx+1}. 緯度: {spk[0]:.6f}, 経度: {spk[1]:.6f}, 方向: {spk[2]}\n"
+        speaker_info += f"他 {num_speakers - 5} 件のスピーカーも配置されています。\n"
+    elif num_speakers > 0:
+        speaker_info = "以下のスピーカーが配置されています:\n"
+        for idx, spk in enumerate(speakers):
             speaker_info += f"{idx+1}. 緯度: {spk[0]:.6f}, 経度: {spk[1]:.6f}, 方向: {spk[2]}\n"
     else:
         speaker_info = "現在、スピーカーは配置されていません。\n"
     
-    sound_range = f"{st.session_state.L0-40}dB ~ {st.session_state.L0}dB"
+    sound_range = f"{st.session_state.L0-40}dB ~ {st.session_state.L0}dB" if "L0" in st.session_state else "情報なし"
+    
     prompt = (
         f"{speaker_info}"
-        f"ヒートマップ解析によると、音圧レベルは概ね {sound_range} の範囲です。\n"
-        f"ユーザーからの問い合わせ: {user_query}\n"
-        "上記の情報を元に、地図上のスピーカー配置や音圧分布に関する分析、改善案、提案を具体的に述べてください。"
+        f"現在の音圧レベルの範囲は概ね {sound_range} です。\n"
+        f"ユーザーの問い合わせ: {user_query}\n"
+        "上記の情報に基づき、スピーカー配置や音圧分布に関する分析、改善案、または提案を具体的に述べてください。"
     )
     return prompt
 
@@ -269,7 +279,7 @@ def call_gemini_api(query):
         }]
     }
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -418,7 +428,6 @@ def main():
     if "gemini_result" in st.session_state:
         result = st.session_state.gemini_result
         answer_text = ""
-        # 複数のキー候補を試す
         if "candidates" in result and len(result["candidates"]) > 0:
             candidate = result["candidates"][0]
             answer_text = candidate.get("output", candidate.get("text", candidate.get("generatedText", "")))
