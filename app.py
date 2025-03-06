@@ -167,7 +167,6 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, 
 def generate_gemini_prompt(user_query):
     """
     ユーザーの問い合わせと地図上のスピーカー配置、音圧分布の概要を組み合わせたプロンプトを生成する
-    (スピーカーが多数の場合は、最初の5件のみ詳細に記載し、残りは件数で要約)
     """
     speakers = st.session_state.speakers if "speakers" in st.session_state else []
     num_speakers = len(speakers)
@@ -213,30 +212,13 @@ def call_gemini_api(query):
         return {}
 
 # ----------------------------------------------------------------
-# Module: Gemini Status Check（小さく表示）
-# ----------------------------------------------------------------
-def check_gemini_status():
-    """
-    Gemini APIのヘルスチェックを行い、正常／異常およびエラー理由を返す
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
-    try:
-        response = requests.get(url, timeout=10)
-        if 200 <= response.status_code < 300:
-            return "正常", ""
-        else:
-            return "異常", f"HTTPステータスコード: {response.status_code}"
-    except requests.exceptions.RequestException as e:
-        return "異常", str(e)
-
-# ----------------------------------------------------------------
 # Module: Main Application (UI)
 # ----------------------------------------------------------------
 def main():
     st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
     st.title("防災スピーカー音圧可視化マップ")
     
-    # セッションステートの初期化
+    # セッションステート初期化
     if "map_center" not in st.session_state:
         st.session_state.map_center = [34.25741795269067, 133.20450105700033]
     if "map_zoom" not in st.session_state:
@@ -252,16 +234,9 @@ def main():
     if "r_max" not in st.session_state:
         st.session_state.r_max = 500
     
+    # サイドバー
     with st.sidebar:
         st.header("操作パネル")
-        
-        # Gemini APIのステータスを小さく表示
-        status, detail = check_gemini_status()
-        if status == "正常":
-            st.success("Geminiステータス: 正常")
-        else:
-            st.error(f"Geminiステータス: 異常\n理由: {detail}")
-        st.write("---")
         
         # CSVアップロード
         uploaded_file = st.file_uploader("CSVファイルをアップロード", type=["csv"])
@@ -289,8 +264,15 @@ def main():
         
         # スピーカー削除機能
         if st.session_state.speakers:
-            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" for i, spk in enumerate(st.session_state.speakers)]
-            selected_index = st.selectbox("削除するスピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
+            options = [
+                f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}"
+                for i, spk in enumerate(st.session_state.speakers)
+            ]
+            selected_index = st.selectbox(
+                "削除するスピーカーを選択",
+                list(range(len(options))),
+                format_func=lambda i: options[i]
+            )
             if st.button("選択したスピーカーを削除"):
                 try:
                     del st.session_state.speakers[selected_index]
@@ -319,7 +301,10 @@ def main():
             lat_max = st.session_state.map_center[0] + 0.01
             lon_min = st.session_state.map_center[1] - 0.01
             lon_max = st.session_state.map_center[1] + 0.01
-            grid_lat, grid_lon = np.meshgrid(np.linspace(lat_min, lat_max, 50), np.linspace(lon_min, lon_max, 50))
+            grid_lat, grid_lon = np.meshgrid(
+                np.linspace(lat_min, lat_max, 50),
+                np.linspace(lon_min, lon_max, 50)
+            )
             try:
                 optimized = optimize_speaker_placement(
                     st.session_state.speakers,
@@ -353,18 +338,38 @@ def main():
         lat_max = st.session_state.map_center[0] + 0.01
         lon_min = st.session_state.map_center[1] - 0.01
         lon_max = st.session_state.map_center[1] + 0.01
-        grid_lat, grid_lon = np.meshgrid(np.linspace(lat_min, lat_max, 100), np.linspace(lon_min, lon_max, 100))
+        grid_lat, grid_lon = np.meshgrid(
+            np.linspace(lat_min, lat_max, 100),
+            np.linspace(lon_min, lon_max, 100)
+        )
     
         if st.session_state.heatmap_data is None:
-            st.session_state.heatmap_data = calculate_heatmap(st.session_state.speakers, st.session_state.L0, st.session_state.r_max, grid_lat, grid_lon)
+            st.session_state.heatmap_data = calculate_heatmap(
+                st.session_state.speakers,
+                st.session_state.L0,
+                st.session_state.r_max,
+                grid_lat,
+                grid_lon
+            )
         
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
         for spk in st.session_state.speakers:
             lat, lon, dirs = spk
             popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})<br><b>方向</b>: {dirs}"
-            folium.Marker(location=[lat, lon], popup=folium.Popup(popup_text, max_width=300)).add_to(m)
+            folium.Marker(
+                location=[lat, lon],
+                popup=folium.Popup(popup_text, max_width=300)
+            ).add_to(m)
+        
         if st.session_state.heatmap_data:
-            HeatMap(st.session_state.heatmap_data, min_opacity=0.3, max_opacity=0.8, radius=15, blur=20).add_to(m)
+            HeatMap(
+                st.session_state.heatmap_data,
+                min_opacity=0.3,
+                max_opacity=0.8,
+                radius=15,
+                blur=20
+            ).add_to(m)
+        
         st_folium(m, width=700, height=500)
     
     with col2:
@@ -380,24 +385,27 @@ def main():
         count = len(st.session_state.heatmap_data) if st.session_state.heatmap_data else 0
         st.write("ヒートマップデータの件数:", count)
     
+    # ------------------------------
     # Gemini API の回答表示部分
+    # ------------------------------
     st.markdown("---")
     st.subheader("Gemini API の回答（説明部分 & JSON）")
+    
     if "gemini_result" in st.session_state:
         result = st.session_state.gemini_result
-        answer_text = ""
-        # ここでは候補の "text" キーを優先的に表示
-        if "candidates" in result and len(result["candidates"]) > 0:
-            candidate = result["candidates"][0]
-            answer_text = candidate.get("text", "")
-        elif "result" in result:
-            answer_text = result["result"].get("text", "")
         
-        if answer_text:
+        # ★ ここで "candidates[0].content.parts[0].text" を抽出して表示する
+        explanation_text = ""
+        try:
+            explanation_text = result["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError, TypeError):
+            pass
+        
+        if explanation_text:
             st.markdown("#### 説明部分")
-            st.write(answer_text)
+            st.write(explanation_text)
         else:
-            st.error("説明部分の抽出に失敗しました。")
+            st.error("説明部分の抽出に失敗しました。JSON構造を確認してください。")
         
         st.markdown("#### JSON 全体")
         st.json(result)
