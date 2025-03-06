@@ -8,7 +8,7 @@ import math
 import io
 import branca.colormap as cm
 import requests
-import re  # ★座標抽出用の正規表現で使用
+import re  # ★座標抽出用の正規表現
 
 # ------------------------------------------------------------------
 # 定数／設定（APIキー、モデル）
@@ -187,7 +187,6 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon,
 # ----------------------------------------------------------------
 # Module: Gemini API Utilities & プロンプト生成
 # ----------------------------------------------------------------
-
 def generate_gemini_prompt(user_query):
     """
     海など設置に困難な場所を除外、スピーカー間距離300m程度を考慮して提案するよう明示したプロンプト。
@@ -217,7 +216,8 @@ def generate_gemini_prompt(user_query):
         "海など設置に困難な場所は除外してください。\n"
         "また、スピーカー同士は300m程度離れている場所を考慮して提案してください。\n"
         f"ユーザーからの問い合わせ: {user_query}\n"
-        "上記の情報に基づき、スピーカー配置や音圧分布に関する分析・改善案・提案を具体的に述べてください。"
+        "上記の情報に基づき、スピーカー配置や音圧分布に関する分析・改善案・提案を具体的に述べてください。\n"
+        "【座標表記形式】 緯度 xxx.xxxxxx, 経度 yyy.yyyyyy で統一してください。"
     )
     return prompt
 
@@ -243,14 +243,15 @@ def call_gemini_api(query):
 # ----------------------------------------------------------------
 # Module: Utility for extracting coordinates from explanation
 # ----------------------------------------------------------------
-
 def extract_coordinates_from_text(text):
     """
     説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」形式の座標をすべて抽出する。
     複数ある場合はリストで返す。
+    
+    例: "緯度 34.259880, 経度 133.202980" のような記述を対象。
     """
-    # 「緯度：34.259880、経度：133.202980」のようなパターンを正規表現で取得
-    pattern = r"緯度：([\-\d\.]+)、経度：([\-\d\.]+)"
+    # 正規表現: "緯度" + 空白 + (±数字.数字) + ", " + "経度" + 空白 + (±数字.数字)
+    pattern = r"緯度\s+([\-\d\.]+),\s+経度\s+([\-\d\.]+)"
     matches = re.findall(pattern, text)
     coords = []
     for lat_str, lon_str in matches:
@@ -457,7 +458,7 @@ def main():
             st.markdown("#### 説明部分")
             st.write(explanation_text)
             
-            # ★説明文から座標を抽出してスピーカーに追加
+            # ★説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」を抽出してスピーカーに追加
             coords = extract_coordinates_from_text(explanation_text)
             if coords:
                 st.markdown("##### 以下の座標を検出しました。地図に追加します。")
