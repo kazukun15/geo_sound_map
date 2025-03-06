@@ -2,6 +2,6 @@ streamlit
 folium
 streamlit-folium
 numpy
-branca
+pandas
 scikit-image
-geopy
+branca
