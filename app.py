@@ -13,7 +13,7 @@ import requests
 # 定数／設定（APIキー、モデル）
 # ------------------------------------------------------------------
 API_KEY = st.secrets["general"]["api_key"]
-MODEL_NAME = "gemini-2.0-flash-001"
+MODEL_NAME = "gemini-2.0-flash"
 
 # ----------------------------------------------------------------
 # Module: Direction Utilities
@@ -239,12 +239,15 @@ def call_gemini_api(query):
         query (str): APIに送るクエリ文字列
     
     Returns:
-        dict: APIからのレスポンス（例）
+        dict: APIからのレスポンス
     """
-    headers = {"Authorization": f"Bearer {API_KEY}"}
-    # 実際のエンドポイントに合わせて変更してください
-    url = "https://api.gemini.example/endpoint"  
-    payload = {"query": query, "model": MODEL_NAME}
+    headers = {"Content-Type": "application/json"}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
+    payload = {
+        "contents": [{
+            "parts": [{"text": query}]
+        }]
+    }
     
     try:
         response = requests.post(url, json=payload, headers=headers)
