@@ -446,11 +446,14 @@ def main():
     st.markdown("---")
     st.subheader("Gemini API の回答")
     if "gemini_result" in st.session_state:
-        # 返却されたJSONから最初の候補の回答テキストのみを抽出
-        try:
-            answer_text = st.session_state.gemini_result["candidates"][0]["output"]
+        result = st.session_state.gemini_result
+        answer_text = ""
+        if "candidates" in result and len(result["candidates"]) > 0:
+            candidate = result["candidates"][0]
+            answer_text = candidate.get("output", candidate.get("text", ""))
+        if answer_text:
             st.write(answer_text)
-        except Exception as e:
+        else:
             st.error("回答の抽出に失敗しました。APIのレスポンス形式を確認してください。")
     else:
         st.info("Gemini API の回答はまだありません。")
