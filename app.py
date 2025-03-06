@@ -7,6 +7,13 @@ import pandas as pd
 import math
 import io
 import branca.colormap as cm
+import requests
+
+# ------------------------------------------------------------------
+# 定数／設定（APIキー、モデル）
+# ------------------------------------------------------------------
+API_KEY = st.secrets["general"]["api_key"]
+MODEL_NAME = "gemini-2.0-flash-001"
 
 # ----------------------------------------------------------------
 # Module: Direction Utilities
@@ -216,10 +223,36 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, 
                     if candidate_obj < best_obj:
                         best_obj = candidate_obj
                         best_spk = candidate.copy()
-            # 更新があれば採用
             optimized[i] = best_spk
             current_obj = calculate_objective(optimized, target, L0, r_max, grid_lat, grid_lon)
     return optimized
+
+# ----------------------------------------------------------------
+# Module: Gemini API Utilities
+# ----------------------------------------------------------------
+def call_gemini_api(query):
+    """
+    Gemini APIに対してクエリを送信する関数。
+    使用するAPIキーとモデルは streamlit の secrets から取得した定数を利用する。
+    
+    Parameters:
+        query (str): APIに送るクエリ文字列
+    
+    Returns:
+        dict: APIからのレスポンス（例）
+    """
+    headers = {"Authorization": f"Bearer {API_KEY}"}
+    # 実際のエンドポイントに合わせて変更してください
+    url = "https://api.gemini.example/endpoint"  
+    payload = {"query": query, "model": MODEL_NAME}
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        st.error(f"Gemini API呼び出しエラー: {e}")
+        return {}
 
 # ----------------------------------------------------------------
 # Module: Main Application (UI)
@@ -227,7 +260,7 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, 
 def main():
     """
     防災スピーカー音圧可視化マップのメインアプリケーション関数。
-    自動最適配置アルゴリズムと各種操作パネルを統合。
+    自動最適配置アルゴリズム、Gemini API 呼び出し、各種操作パネルを統合。
     """
     st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
     st.title("防災スピーカー音圧可視化マップ")
@@ -280,7 +313,7 @@ def main():
         if st.session_state.speakers:
             options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" 
                        for i, spk in enumerate(st.session_state.speakers)]
-            selected_index = st.selectbox("削除するスピーカーを選択", list(range(len(options))), 
+            selected_index = st.selectbox("削除するスピーカーを選択", list(range(len(options))),
                                           format_func=lambda i: options[i])
             if st.button("選択したスピーカーを削除"):
                 try:
@@ -328,6 +361,13 @@ def main():
                 st.success("自動最適配置アルゴリズムを実行しました")
             except Exception as e:
                 st.error(f"最適配置アルゴリズムの実行中にエラーが発生しました: {e}")
+        
+        # Gemini API 呼び出し機能
+        st.subheader("Gemini API 呼び出し")
+        gemini_query = st.text_input("Gemini に問い合わせる内容")
+        if st.button("Gemini API を実行"):
+            result = call_gemini_api(gemini_query)
+            st.write("Gemini API のレスポンス:", result)
     
     # メインパネル：地図とヒートマップの表示
     col1, col2 = st.columns([3, 1])
