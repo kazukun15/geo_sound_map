@@ -442,11 +442,16 @@ def main():
         count = len(st.session_state.heatmap_data) if st.session_state.heatmap_data else 0
         st.write("ヒートマップデータの件数:", count)
     
-    # 地図の下部にGemini APIの回答を表示する領域
+    # 地図の下部にGemini APIの回答のみを表示する領域
     st.markdown("---")
     st.subheader("Gemini API の回答")
     if "gemini_result" in st.session_state:
-        st.json(st.session_state.gemini_result)
+        # 返却されたJSONから最初の候補の回答テキストのみを抽出
+        try:
+            answer_text = st.session_state.gemini_result["candidates"][0]["output"]
+            st.write(answer_text)
+        except Exception as e:
+            st.error("回答の抽出に失敗しました。APIのレスポンス形式を確認してください。")
     else:
         st.info("Gemini API の回答はまだありません。")
 
