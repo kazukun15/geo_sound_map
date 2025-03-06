@@ -246,7 +246,7 @@ def call_gemini_api(query):
 
 def extract_coordinates_from_text(text):
     """
-    説明文から「緯度：xxx.xxxxxx、経度：yyy.yyyyyy」形式の座標をすべて抽出する。
+    説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」形式の座標をすべて抽出する。
     複数ある場合はリストで返す。
     """
     # 「緯度：34.259880、経度：133.202980」のようなパターンを正規表現で取得
