@@ -183,14 +183,14 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon,
 # ----------------------------------------------------------------
 def generate_gemini_prompt(user_query):
     """
-    ユーザーの問い合わせと地図上のスピーカー配置、音圧分布の概要を組み合わせたプロンプトを生成する。
-    加えて、「海など設置に困難な場所は除外」および「スピーカー同士は300m程度離れている場所を考慮」
-    するよう指示し、座標表記形式を「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」に固定してください。
+    ユーザーの問い合わせと地図上のスピーカー配置、音圧分布の概要に加え、
+    海など設置に困難な場所は除外、スピーカー同士は300m程度離れている場所を考慮、
+    さらに山や生えている木の種類など地形情報を加味して提案するよう指示します。
+    座標表記形式は「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」に固定してください。
     """
     speakers = st.session_state.speakers if "speakers" in st.session_state else []
     num_speakers = len(speakers)
     
-    # スピーカー情報の要約
     if num_speakers > 5:
         speaker_list = speakers[:5]
         speaker_info = "以下のスピーカーが配置されています:\n"
@@ -210,8 +210,8 @@ def generate_gemini_prompt(user_query):
         f"{speaker_info}"
         f"現在の音圧レベルの範囲は概ね {sound_range} です。\n"
         "海など設置に困難な場所は除外してください。\n"
-        "山や生えている木の種類など、地形を加味して提案してください。\n"
-        "また、スピーカー同士は300m程度離れている場所を考慮して提案してください。\n"
+        "また、スピーカー同士は300m程度離れている場所を考慮し、"
+        "山や生えている木の種類などの地形情報も加味して、設置が可能な安全かつ効果的な場所を提案してください。\n"
         f"ユーザーからの問い合わせ: {user_query}\n"
         "上記の情報に基づき、スピーカー配置や音圧分布に関する分析・改善案・提案を具体的に述べてください。\n"
         "【座標表記形式】 緯度 xxx.xxxxxx, 経度 yyy.yyyyyy で統一してください。"
@@ -279,7 +279,6 @@ def main():
         st.session_state.L0 = 80
     if "r_max" not in st.session_state:
         st.session_state.r_max = 500
-    # Gemini の回答から座標追加の処理が一度だけ実行されるようにフラグを用意
     if "gemini_parsed" not in st.session_state:
         st.session_state.gemini_parsed = False
     
@@ -312,8 +311,15 @@ def main():
         
         # スピーカー削除機能
         if st.session_state.speakers:
-            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" for i, spk in enumerate(st.session_state.speakers)]
-            selected_index = st.selectbox("削除するスピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
+            options = [
+                f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}"
+                for i, spk in enumerate(st.session_state.speakers)
+            ]
+            selected_index = st.selectbox(
+                "削除するスピーカーを選択",
+                list(range(len(options))),
+                format_func=lambda i: options[i]
+            )
             if st.button("選択したスピーカーを削除"):
                 try:
                     del st.session_state.speakers[selected_index]
@@ -334,7 +340,7 @@ def main():
         st.session_state.L0 = st.slider("初期音圧レベル (dB)", 50, 100, st.session_state.L0)
         st.session_state.r_max = st.slider("最大伝播距離 (m)", 100, 2000, st.session_state.r_max)
         
-        # 自動最適配置アルゴリズム
+        # 自動最適配置
         target_default = st.session_state.L0 - 20
         target_level = st.slider("目標音圧レベル (dB)", st.session_state.L0 - 40, st.session_state.L0, target_default)
         if st.button("自動最適配置を実行"):
@@ -366,15 +372,14 @@ def main():
         # Gemini API 呼び出し
         st.subheader("Gemini API 呼び出し")
         gemini_query = st.text_input("Gemini に問い合わせる内容")
-        if st.button("AI提案実施"):
+        if st.button("Gemini API を実行"):
             full_prompt = generate_gemini_prompt(gemini_query)
             result = call_gemini_api(full_prompt)
             st.session_state.gemini_result = result
-            # 新たな回答がある場合は解析フラグをリセット
-            st.session_state.gemini_parsed = False
+            st.session_state.gemini_parsed = False  # 新たな回答があれば解析フラグをリセット
             st.success("Gemini API の実行が完了しました")
     
-    # メインパネル：地図とヒートマップ表示
+    # メインパネル：地図とヒートマップの表示
     col1, col2 = st.columns([3, 1])
     with col1:
         lat_min = st.session_state.map_center[0] - 0.01
@@ -396,7 +401,7 @@ def main():
             )
         
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
-        # マーカー表示
+        # スピーカーをマーカー表示
         for spk in st.session_state.speakers:
             lat, lon, dirs = spk
             popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})<br><b>方向</b>: {dirs}"
@@ -405,7 +410,7 @@ def main():
                 popup=folium.Popup(popup_text, max_width=300)
             ).add_to(m)
         
-        # ヒートマップ表示
+        # ヒートマップ追加
         if st.session_state.heatmap_data:
             HeatMap(
                 st.session_state.heatmap_data,
@@ -433,11 +438,11 @@ def main():
     # Gemini API の回答表示 (説明部分 & JSON 全体)
     # -------------------------------------------------------
     st.markdown("---")
-    st.subheader("AIからの設置提案")
+    st.subheader("Gemini API の回答（説明部分 & JSON）")
     if "gemini_result" in st.session_state:
         result = st.session_state.gemini_result
         
-        # 例: candidates[0].content.parts[0].text を抽出して説明として表示
+        # 例: candidates[0].content.parts[0].text を抽出して説明部分として表示
         explanation_text = ""
         try:
             explanation_text = result["candidates"][0]["content"]["parts"][0]["text"]
@@ -454,11 +459,9 @@ def main():
                 if coords:
                     st.markdown("##### 以下の座標を検出しました。地図に追加します。")
                     for (lat, lon) in coords:
-                        st.session_state.speakers.append([lat, lon, [0.0]])  # 方向は適当
+                        st.session_state.speakers.append([lat, lon, [0.0]])  # 方向は[0.0]など適当
                         st.write(f"- 緯度: {lat}, 経度: {lon} を追加")
-                    # 座標追加後、再度追加処理が走らないようにフラグをセット
                     st.session_state.gemini_parsed = True
-                    # ヒートマップ再計算のためリセット
                     st.session_state.heatmap_data = None
                 else:
                     st.info("説明文から座標は検出されませんでした。")
