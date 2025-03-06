@@ -228,8 +228,35 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, 
     return optimized
 
 # ----------------------------------------------------------------
-# Module: Gemini API Utilities
+# Module: Gemini API Utilities & プロンプト生成
 # ----------------------------------------------------------------
+def generate_gemini_prompt(user_query):
+    """
+    ユーザーの問い合わせと現在の地図上のスピーカー配置情報・音圧分布の概要を組み合わせたプロンプトを生成する。
+    
+    Parameters:
+        user_query (str): ユーザーが入力した問い合わせ内容
+    
+    Returns:
+        str: Gemini API へ送信するプロンプト文字列
+    """
+    speaker_info = ""
+    if st.session_state.speakers:
+        speaker_info = "現在の地図には以下のスピーカーが配置されています:\n"
+        for idx, spk in enumerate(st.session_state.speakers):
+            speaker_info += f"{idx+1}. 緯度: {spk[0]:.6f}, 経度: {spk[1]:.6f}, 方向: {spk[2]}\n"
+    else:
+        speaker_info = "現在、スピーカーは配置されていません。\n"
+    
+    sound_range = f"{st.session_state.L0-40}dB ~ {st.session_state.L0}dB"
+    prompt = (
+        f"{speaker_info}"
+        f"ヒートマップ解析によると、音圧レベルは概ね {sound_range} の範囲です。\n"
+        f"ユーザーからの問い合わせ: {user_query}\n"
+        "上記の情報を元に、地図上のスピーカー配置や音圧分布に関する分析、改善案や提案を具体的に述べてください。"
+    )
+    return prompt
+
 def call_gemini_api(query):
     """
     Gemini APIに対してクエリを送信する関数。
@@ -365,11 +392,12 @@ def main():
             except Exception as e:
                 st.error(f"最適配置アルゴリズムの実行中にエラーが発生しました: {e}")
         
-        # Gemini API 呼び出し機能
+        # Gemini API 呼び出し機能（プロンプトに地図情報を組み込む）
         st.subheader("Gemini API 呼び出し")
         gemini_query = st.text_input("Gemini に問い合わせる内容")
         if st.button("Gemini API を実行"):
-            result = call_gemini_api(gemini_query)
+            full_prompt = generate_gemini_prompt(gemini_query)
+            result = call_gemini_api(full_prompt)
             st.session_state.gemini_result = result
             st.success("Gemini API の実行が完了しました")
     
