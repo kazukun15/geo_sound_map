@@ -96,24 +96,22 @@ def export_csv(data, columns):
     return buffer.getvalue().encode("utf-8")
 
 # ----------------------------------------------------------------
-# Module: Heatmap Calculation Utilities
+# Module: Heatmap Calculation & Sound Grid Utilities
 # ----------------------------------------------------------------
 @st.cache_data(show_spinner=False)
-def calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
+def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
-    ヒートマップのデータを計算する関数。
-    
-    各スピーカーからの音圧レベルを計算し、グリッド状に配置した結果を返す。
+    各グリッド点における音圧レベルを計算し、2D配列（sound_grid）として返す関数。
     
     Parameters:
-        speakers (list): スピーカーリスト、各要素は [lat, lon, [directions]] の形式
+        speakers (list): スピーカーリスト（各要素は [lat, lon, [directions]]）
         L0 (float): 初期音圧レベル (dB)
         r_max (float): 最大伝播距離 (m)
-        grid_lat (ndarray): 緯度のグリッド (2D配列)
-        grid_lon (ndarray): 経度のグリッド (2D配列)
+        grid_lat (ndarray): 緯度のグリッド（2D配列）
+        grid_lon (ndarray): 経度のグリッド（2D配列）
     
     Returns:
-        list: ヒートマップデータのリスト [ [lat, lon, sound_level], ... ]
+        ndarray: 各グリッド点における音圧レベル（dB）の2D配列
     """
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
@@ -127,22 +125,101 @@ def calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
         distances[distances < 1] = 1  # 最小距離1mの補正
         bearings = np.degrees(np.arctan2(grid_coords[:, 1] - lon, grid_coords[:, 0] - lat)) % 360
         power = np.zeros_like(distances)
-
         for direction in dirs:
             angle_diff = np.abs(bearings - direction) % 360
             angle_diff = np.minimum(angle_diff, 360 - angle_diff)
             power += np.clip(1 - angle_diff / 180, 0, 1) * 10 ** ((L0 - 20 * np.log10(distances)) / 10)
-
         power[distances > r_max] = 0
         power_sum += power.reshape(Nx, Ny)
-
+    
     sound_grid = np.full_like(power_sum, np.nan)
     positive_mask = power_sum > 0
     sound_grid[positive_mask] = 10 * np.log10(power_sum[positive_mask])
     sound_grid = np.clip(sound_grid, L0 - 40, L0)
+    return sound_grid
+
+@st.cache_data(show_spinner=False)
+def calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
+    """
+    ヒートマップ用のデータリストを作成する関数。
+    
+    Parameters:
+        speakers (list): スピーカーリスト
+        L0 (float): 初期音圧レベル (dB)
+        r_max (float): 最大伝播距離 (m)
+        grid_lat, grid_lon (ndarray): 緯度・経度のグリッド
+    
+    Returns:
+        list: ヒートマップデータのリスト [ [lat, lon, sound_level], ... ]
+    """
+    sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
+    Nx, Ny = grid_lat.shape
     heat_data = [[grid_lat[i, j], grid_lon[i, j], sound_grid[i, j]] 
                  for i in range(Nx) for j in range(Ny) if not np.isnan(sound_grid[i, j])]
     return heat_data
+
+def calculate_objective(speakers, target, L0, r_max, grid_lat, grid_lon):
+    """
+    目標音圧レベルとの差の二乗平均誤差（MSE）を計算する関数。
+    
+    Parameters:
+        speakers (list): スピーカーリスト
+        target (float): 目標とする音圧レベル (dB)
+        L0 (float): 初期音圧レベル (dB)
+        r_max (float): 最大伝播距離 (m)
+        grid_lat, grid_lon (ndarray): 緯度・経度のグリッド
+    
+    Returns:
+        float: MSEの値
+    """
+    sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
+    valid = ~np.isnan(sound_grid)
+    mse = np.mean((sound_grid[valid] - target) ** 2)
+    return mse
+
+def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, iterations=10, delta=0.0001):
+    """
+    簡易なヒューリスティック法を用いて、各スピーカーの位置を微調整し、
+    目標音圧レベルとの差（二乗誤差）を最小化する自動最適配置アルゴリズム。
+    
+    Parameters:
+        speakers (list): 現在のスピーカーリスト（各要素は [lat, lon, directions]）
+        target (float): 目標音圧レベル (dB)
+        L0 (float): 初期音圧レベル (dB)
+        r_max (float): 最大伝播距離 (m)
+        grid_lat, grid_lon (ndarray): 緯度・経度のグリッド
+        iterations (int): 最適化の試行回数
+        delta (float): 座標変更の刻み幅（緯度・経度の単位）
+    
+    Returns:
+        list: 最適化後のスピーカーリスト
+    """
+    # 現在のスピーカー配置のコピー
+    optimized = [list(spk) for spk in speakers]
+    current_obj = calculate_objective(optimized, target, L0, r_max, grid_lat, grid_lon)
+    
+    for _ in range(iterations):
+        for i, spk in enumerate(optimized):
+            best_spk = spk.copy()
+            best_obj = current_obj
+            # 候補：緯度と経度それぞれに対し、+delta, -deltaの移動を試す
+            for d_lat in [delta, -delta, 0]:
+                for d_lon in [delta, -delta, 0]:
+                    if d_lat == 0 and d_lon == 0:
+                        continue
+                    candidate = spk.copy()
+                    candidate[0] += d_lat
+                    candidate[1] += d_lon
+                    temp_speakers = optimized.copy()
+                    temp_speakers[i] = candidate
+                    candidate_obj = calculate_objective(temp_speakers, target, L0, r_max, grid_lat, grid_lon)
+                    if candidate_obj < best_obj:
+                        best_obj = candidate_obj
+                        best_spk = candidate.copy()
+            # 更新があれば採用
+            optimized[i] = best_spk
+            current_obj = calculate_objective(optimized, target, L0, r_max, grid_lat, grid_lon)
+    return optimized
 
 # ----------------------------------------------------------------
 # Module: Main Application (UI)
@@ -150,6 +227,7 @@ def calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
 def main():
     """
     防災スピーカー音圧可視化マップのメインアプリケーション関数。
+    自動最適配置アルゴリズムと各種操作パネルを統合。
     """
     st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
     st.title("防災スピーカー音圧可視化マップ")
@@ -169,11 +247,12 @@ def main():
         st.session_state.L0 = 80
     if "r_max" not in st.session_state:
         st.session_state.r_max = 500
-
-    # サイドバー：ファイルアップロード、スピーカー追加・リセット、パラメータ調整
+    
+    # サイドバー：操作パネル
     with st.sidebar:
         st.header("操作パネル")
         
+        # CSVアップロード
         uploaded_file = st.file_uploader("CSVファイルをアップロード", type=["csv"])
         if uploaded_file:
             speakers, measurements = load_csv(uploaded_file)
@@ -182,9 +261,9 @@ def main():
             if measurements:
                 st.session_state.measurements.extend(measurements)
             st.success("CSVファイルを読み込みました。")
-            # ヒートマップ再計算のためリセット
             st.session_state.heatmap_data = None
-
+        
+        # スピーカー追加
         new_speaker = st.text_input("スピーカー追加 (緯度,経度,方向1,方向2...)", placeholder="例: 34.2579,133.2072,N,E")
         if st.button("スピーカー追加"):
             try:
@@ -197,13 +276,58 @@ def main():
             except (ValueError, IndexError) as e:
                 st.error("スピーカーの追加に失敗しました。形式が正しくない可能性があります。(緯度,経度,方向...)")
         
+        # スピーカー削除機能
+        if st.session_state.speakers:
+            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" 
+                       for i, spk in enumerate(st.session_state.speakers)]
+            selected_index = st.selectbox("削除するスピーカーを選択", list(range(len(options))), 
+                                          format_func=lambda i: options[i])
+            if st.button("選択したスピーカーを削除"):
+                try:
+                    del st.session_state.speakers[selected_index]
+                    st.session_state.heatmap_data = None
+                    st.success("選択したスピーカーを削除しました")
+                except Exception as e:
+                    st.error(f"削除処理でエラーが発生しました: {e}")
+        else:
+            st.info("削除可能なスピーカーがありません。")
+        
+        # スピーカーリセット
         if st.button("スピーカーリセット"):
             st.session_state.speakers = []
             st.session_state.heatmap_data = None
             st.success("スピーカーをリセットしました")
-
+        
+        # パラメータ調整
         st.session_state.L0 = st.slider("初期音圧レベル (dB)", 50, 100, st.session_state.L0)
         st.session_state.r_max = st.slider("最大伝播距離 (m)", 100, 2000, st.session_state.r_max)
+        
+        # 自動最適配置アルゴリズムのための目標音圧レベル（例：L0とL0-40の中間）
+        target_default = st.session_state.L0 - 20
+        target_level = st.slider("目標音圧レベル (dB)", st.session_state.L0 - 40, st.session_state.L0, target_default)
+        if st.button("自動最適配置を実行"):
+            # 表示範囲のグリッド（中心±0.01度）
+            lat_min = st.session_state.map_center[0] - 0.01
+            lat_max = st.session_state.map_center[0] + 0.01
+            lon_min = st.session_state.map_center[1] - 0.01
+            lon_max = st.session_state.map_center[1] + 0.01
+            grid_lat, grid_lon = np.meshgrid(np.linspace(lat_min, lat_max, 50), np.linspace(lon_min, lon_max, 50))
+            try:
+                optimized = optimize_speaker_placement(
+                    st.session_state.speakers,
+                    target_level,
+                    st.session_state.L0,
+                    st.session_state.r_max,
+                    grid_lat,
+                    grid_lon,
+                    iterations=10,
+                    delta=0.0001
+                )
+                st.session_state.speakers = optimized
+                st.session_state.heatmap_data = None
+                st.success("自動最適配置アルゴリズムを実行しました")
+            except Exception as e:
+                st.error(f"最適配置アルゴリズムの実行中にエラーが発生しました: {e}")
     
     # メインパネル：地図とヒートマップの表示
     col1, col2 = st.columns([3, 1])
@@ -218,15 +342,12 @@ def main():
         if st.session_state.heatmap_data is None:
             st.session_state.heatmap_data = calculate_heatmap(st.session_state.speakers, st.session_state.L0, st.session_state.r_max, grid_lat, grid_lon)
         
-        # Foliumマップの生成
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
-        # スピーカーのマーカー表示
         for spk in st.session_state.speakers:
             lat, lon, dirs = spk
             popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})<br><b>方向</b>: {dirs}"
             folium.Marker(location=[lat, lon], popup=folium.Popup(popup_text, max_width=300)).add_to(m)
         
-        # ヒートマップの追加
         if st.session_state.heatmap_data:
             HeatMap(
                 st.session_state.heatmap_data,
@@ -239,12 +360,10 @@ def main():
         st_folium(m, width=700, height=500)
     
     with col2:
-        # CSVダウンロードボタンの表示
         csv_data_speakers = export_csv(st.session_state.speakers, 
                                        ["スピーカー緯度", "スピーカー経度", "方向1", "方向2", "方向3"])
         st.download_button("スピーカーCSVダウンロード", csv_data_speakers, "speakers.csv", "text/csv")
     
-    # デバッグ・テスト情報の表示（必要に応じて単体テストも実施可能）
     with st.expander("デバッグ・テスト情報"):
         st.write("スピーカー情報:", st.session_state.speakers)
         st.write("計測情報:", st.session_state.measurements)
