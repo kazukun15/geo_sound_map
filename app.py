@@ -10,6 +10,49 @@ import branca.colormap as cm
 import requests
 import re
 
+# ---------- Custom CSS for UI styling ----------
+custom_css = """
+<style>
+/* 全体のフォント */
+body {
+    font-family: 'Helvetica', sans-serif;
+}
+
+/* ヘッダーの色 */
+h1, h2, h3, h4, h5, h6 {
+    color: #333333;
+}
+
+/* ボタンのスタイル */
+div.stButton > button {
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    padding: 10px 24px;
+    font-size: 16px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+div.stButton > button:hover {
+    background-color: #45a049;
+}
+
+/* テキスト入力のスタイル */
+div.stTextInput>div>input {
+    font-size: 16px;
+    padding: 8px;
+}
+
+/* サイドバーのタイトル */
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 {
+    font-weight: bold;
+    color: #4CAF50;
+}
+</style>
+"""
+st.markdown(custom_css, unsafe_allow_html=True)
+# ---------- End Custom CSS ----------
+
 # ------------------------------------------------------------------
 # 定数／設定（APIキー、モデル）
 # ------------------------------------------------------------------
@@ -147,7 +190,7 @@ def calculate_objective(speakers, target, L0, r_max, grid_lat, grid_lon):
 
 def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, iterations=10, delta=0.0001):
     """
-    各スピーカーの位置を微調整し、目標音圧レベルとの差（二乗誤差）を最小化する自動最適配置アルゴリズム。
+    各スピーカーの位置を微調整し、目標音圧レベルとの差（二乗平均誤差）を最小化する自動最適配置アルゴリズム。
     """
     optimized = [list(spk) for spk in speakers]
     current_obj = calculate_objective(optimized, target, L0, r_max, grid_lat, grid_lon)
@@ -277,6 +320,9 @@ def main():
         st.session_state.r_max = 500
     if "gemini_parsed" not in st.session_state:
         st.session_state.gemini_parsed = False
+    # 編集中のスピーカーインデックスを保持するためのキー
+    if "edit_index" not in st.session_state:
+        st.session_state.edit_index = None
     
     with st.sidebar:
         st.header("操作パネル")
@@ -305,9 +351,10 @@ def main():
             except (ValueError, IndexError) as e:
                 st.error("スピーカーの追加に失敗しました。形式が正しくない可能性があります。(緯度,経度,方向...)")
         
-        # スピーカー削除
+        # スピーカー削除・編集機能
         if st.session_state.speakers:
-            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" for i, spk in enumerate(st.session_state.speakers)]
+            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" 
+                       for i, spk in enumerate(st.session_state.speakers)]
             selected_index = st.selectbox("スピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
             col_del, col_edit = st.columns(2)
             with col_del:
@@ -320,23 +367,29 @@ def main():
                         st.error(f"削除処理でエラーが発生しました: {e}")
             with col_edit:
                 if st.button("選択したスピーカーを編集"):
-                    # 編集モード：現在の情報を入力欄に表示して更新
-                    spk = st.session_state.speakers[selected_index]
-                    new_lat = st.text_input("新しい緯度", value=str(spk[0]), key="edit_lat")
-                    new_lon = st.text_input("新しい経度", value=str(spk[1]), key="edit_lon")
-                    new_dirs = st.text_input("新しい方向（カンマ区切り）", value=",".join(str(d) for d in spk[2]), key="edit_dirs")
-                    if st.button("編集内容を保存", key="save_edit"):
-                        try:
-                            lat_val = float(new_lat)
-                            lon_val = float(new_lon)
-                            directions_val = [parse_direction(x) for x in new_dirs.split(",")]
-                            st.session_state.speakers[selected_index] = [lat_val, lon_val, directions_val]
-                            st.session_state.heatmap_data = None
-                            st.success("スピーカー情報が更新されました")
-                        except Exception as e:
-                            st.error(f"編集内容の保存に失敗しました: {e}")
+                    st.session_state.edit_index = selected_index
         else:
             st.info("スピーカーがありません。")
+        
+        # 編集フォーム（表示中の場合のみ）
+        if st.session_state.edit_index is not None:
+            with st.form("edit_form"):
+                spk = st.session_state.speakers[st.session_state.edit_index]
+                new_lat = st.text_input("新しい緯度", value=str(spk[0]), key="edit_lat")
+                new_lon = st.text_input("新しい経度", value=str(spk[1]), key="edit_lon")
+                new_dirs = st.text_input("新しい方向（カンマ区切り）", value=",".join(str(d) for d in spk[2]), key="edit_dirs")
+                submitted = st.form_submit_button("編集内容を保存")
+                if submitted:
+                    try:
+                        lat_val = float(new_lat)
+                        lon_val = float(new_lon)
+                        directions_val = [parse_direction(x) for x in new_dirs.split(",")]
+                        st.session_state.speakers[st.session_state.edit_index] = [lat_val, lon_val, directions_val]
+                        st.session_state.heatmap_data = None
+                        st.success("スピーカー情報が更新されました")
+                        st.session_state.edit_index = None  # 編集終了
+                    except Exception as e:
+                        st.error(f"編集内容の保存に失敗しました: {e}")
         
         # スピーカーリセット
         if st.button("スピーカーリセット"):
@@ -387,7 +440,7 @@ def main():
             st.session_state.gemini_parsed = False  # 新たな回答があれば解析フラグをリセット
             st.success("Gemini API の実行が完了しました")
     
-    # メインパネル：地図とヒートマップの表示
+    # メインパネル：地図とヒートマップ表示
     col1, col2 = st.columns([3, 1])
     with col1:
         lat_min = st.session_state.map_center[0] - 0.01
@@ -448,7 +501,7 @@ def main():
     if "gemini_result" in st.session_state:
         result = st.session_state.gemini_result
         
-        # candidates[0].content.parts[0].text を抽出して説明として表示
+        # candidates[0].content.parts[0].text を抽出して説明部分として表示
         explanation_text = ""
         try:
             explanation_text = result["candidates"][0]["content"]["parts"][0]["text"]
@@ -465,7 +518,7 @@ def main():
                 if coords:
                     st.markdown("##### 以下の座標を検出しました。地図に追加します。")
                     for (lat, lon) in coords:
-                        # 同一座標が既に追加されていないかチェック（簡易的に）
+                        # 同一座標が既に追加されていなければ追加
                         if not any(abs(lat - s[0]) < 1e-6 and abs(lon - s[1]) < 1e-6 for s in st.session_state.speakers):
                             st.session_state.speakers.append([lat, lon, [0.0]])  # 方向は仮設定
                             st.write(f"- 緯度: {lat}, 経度: {lon} を追加")
