@@ -179,7 +179,7 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, 
 def generate_gemini_prompt(user_query):
     """
     ユーザーの問い合わせと地図上のスピーカー配置、音圧分布の概要に加え、
-    海など設置に困難な場所は除外、スピーカー同士は200m程度離れている場所、
+    海など設置に困難な場所は除外、スピーカー同士は300m程度離れている場所、
     さらに山や生えている木の種類などの地形情報も加味して、設置が可能な安全かつ効果的な場所を提案するよう指示してください。
     座標表記形式は「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」に固定してください。
     """
@@ -205,7 +205,7 @@ def generate_gemini_prompt(user_query):
         f"{speaker_info}"
         f"現在の音圧レベルの範囲は概ね {sound_range} です。\n"
         "海など設置に困難な場所は除外してください。\n"
-        "また、スピーカー同士は200m程度離れている場所を考慮し、"
+        "また、スピーカー同士は300m程度離れている場所を考慮し、"
         "さらに山や生えている木の種類などの地形情報も加味して、"
         "設置が可能な安全かつ効果的な場所を提案してください。\n"
         f"ユーザーからの問い合わせ: {user_query}\n"
@@ -305,20 +305,38 @@ def main():
             except (ValueError, IndexError) as e:
                 st.error("スピーカーの追加に失敗しました。形式が正しくない可能性があります。(緯度,経度,方向...)")
         
-        # スピーカー削除機能
+        # スピーカー削除
         if st.session_state.speakers:
-            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" 
-                       for i, spk in enumerate(st.session_state.speakers)]
-            selected_index = st.selectbox("削除するスピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
-            if st.button("選択したスピーカーを削除"):
-                try:
-                    del st.session_state.speakers[selected_index]
-                    st.session_state.heatmap_data = None
-                    st.success("選択したスピーカーを削除しました")
-                except Exception as e:
-                    st.error(f"削除処理でエラーが発生しました: {e}")
+            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" for i, spk in enumerate(st.session_state.speakers)]
+            selected_index = st.selectbox("スピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
+            col_del, col_edit = st.columns(2)
+            with col_del:
+                if st.button("選択したスピーカーを削除"):
+                    try:
+                        del st.session_state.speakers[selected_index]
+                        st.session_state.heatmap_data = None
+                        st.success("選択したスピーカーを削除しました")
+                    except Exception as e:
+                        st.error(f"削除処理でエラーが発生しました: {e}")
+            with col_edit:
+                if st.button("選択したスピーカーを編集"):
+                    # 編集モード：現在の情報を入力欄に表示して更新
+                    spk = st.session_state.speakers[selected_index]
+                    new_lat = st.text_input("新しい緯度", value=str(spk[0]), key="edit_lat")
+                    new_lon = st.text_input("新しい経度", value=str(spk[1]), key="edit_lon")
+                    new_dirs = st.text_input("新しい方向（カンマ区切り）", value=",".join(str(d) for d in spk[2]), key="edit_dirs")
+                    if st.button("編集内容を保存", key="save_edit"):
+                        try:
+                            lat_val = float(new_lat)
+                            lon_val = float(new_lon)
+                            directions_val = [parse_direction(x) for x in new_dirs.split(",")]
+                            st.session_state.speakers[selected_index] = [lat_val, lon_val, directions_val]
+                            st.session_state.heatmap_data = None
+                            st.success("スピーカー情報が更新されました")
+                        except Exception as e:
+                            st.error(f"編集内容の保存に失敗しました: {e}")
         else:
-            st.info("削除可能なスピーカーがありません。")
+            st.info("スピーカーがありません。")
         
         # スピーカーリセット
         if st.button("スピーカーリセット"):
@@ -369,7 +387,7 @@ def main():
             st.session_state.gemini_parsed = False  # 新たな回答があれば解析フラグをリセット
             st.success("Gemini API の実行が完了しました")
     
-    # メインパネル：地図とヒートマップ表示
+    # メインパネル：地図とヒートマップの表示
     col1, col2 = st.columns([3, 1])
     with col1:
         lat_min = st.session_state.map_center[0] - 0.01
@@ -430,7 +448,7 @@ def main():
     if "gemini_result" in st.session_state:
         result = st.session_state.gemini_result
         
-        # candidates[0].content.parts[0].text を抽出して説明部分として表示
+        # candidates[0].content.parts[0].text を抽出して説明として表示
         explanation_text = ""
         try:
             explanation_text = result["candidates"][0]["content"]["parts"][0]["text"]
@@ -447,7 +465,7 @@ def main():
                 if coords:
                     st.markdown("##### 以下の座標を検出しました。地図に追加します。")
                     for (lat, lon) in coords:
-                        # 同一座標が既に追加されていなければ追加
+                        # 同一座標が既に追加されていないかチェック（簡易的に）
                         if not any(abs(lat - s[0]) < 1e-6 and abs(lon - s[1]) < 1e-6 for s in st.session_state.speakers):
                             st.session_state.speakers.append([lat, lon, [0.0]])  # 方向は仮設定
                             st.write(f"- 緯度: {lat}, 経度: {lon} を追加")
