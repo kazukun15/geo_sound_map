@@ -102,7 +102,6 @@ def load_csv(file):
         for _, row in df.iterrows():
             if not pd.isna(row.get("スピーカー緯度")):
                 lat, lon = row["スピーカー緯度"], row["スピーカー経度"]
-                # CSV には行政区情報が含まれていない場合もあるので、defaultは空文字
                 admin = row.get("行政区", "")
                 directions = [parse_direction(row.get(f"方向{i}", "")) 
                               for i in range(1, 4) if not pd.isna(row.get(f"方向{i}"))]
@@ -124,7 +123,6 @@ def export_csv(data, columns):
         if len(entry) >= 3 and isinstance(entry[2], list):
             lat, lon, directions = entry[0], entry[1], entry[2]
             admin = entry[3] if len(entry) > 3 else ""
-            # CSVは1つの方向で出力（例として最初の方向）
             row = {
                 "スピーカー緯度": lat,
                 "スピーカー経度": lon,
@@ -152,7 +150,7 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     power_sum = np.zeros((Nx, Ny))
     
     for spk in speakers:
-        lat, lon, dirs = spk[0], spk[1], spk[2]  # adminは spk[3] (あれば) ですが使用しない
+        lat, lon, dirs = spk[0], spk[1], spk[2]
         dlat = grid_lat - lat
         dlon = grid_lon - lon
         distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * np.cos(np.radians(lat)))**2)
@@ -234,15 +232,15 @@ def generate_gemini_prompt(user_query):
 
     【条件】
     - スピーカーは、被災地域全体に均一に音声を届ける必要がある。
-    - スピーカー同士は、お互いの干渉を避けるため、原則として300m以上離れるように配置する。
+    - スピーカー同士は、お互いの干渉を避けるため、原則として300m以上離れているように配置する。
     - 各スピーカーは、設置場所の地形（山、谷、海岸、島、樹林など）や障害物、さらに行政区（市区町村や区など）の境界や特徴を考慮し、最適な方向に向ける必要がある。
-    - 行政区の境界を尊重し、各区内で均一なカバーと隣接区との連携を考慮してください。
+    - 行政区の境界を尊重し、各区内で均一なカバーと、隣接区との連携を考慮してください。
 
     【出力形式】
     - 各スピーカーの配置は必ず以下の形式で出力してください。
       「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z, 行政区: AAA」
       （例：緯度 34.254000, 経度 133.208000, 方向 270, 行政区: △△区）
-    - 各配置について、設置理由や考慮した地形および行政区の特徴も簡潔に説明してください。
+    - 各配置について、その設置理由や、考慮した地形および行政区の特徴も簡潔に説明してください。
 
     【ユーザーの問い合わせ】
     {user_query}
@@ -336,7 +334,11 @@ def main():
     if "map_zoom" not in st.session_state:
         st.session_state.map_zoom = 14
     if "speakers" not in st.session_state:
-        st.session_state.speakers = [[34.25741795269067, 133.20450105700033, [0.0, 90.0], ""]]
+        # 初期スピーカーとして、従来のデフォルトと新たに追加するスピーカーをセット
+        st.session_state.speakers = [
+            [34.25741795269067, 133.20450105700033, [0.0, 90.0], ""],
+            [34.2574617056359, 133.204487449849, [0.0], ""]
+        ]
     if "measurements" not in st.session_state:
         st.session_state.measurements = []
     if "heatmap_data" not in st.session_state:
@@ -474,16 +476,15 @@ def main():
         gemini_query = st.text_area("Gemini に問い合わせる内容", height=150,
                                     placeholder="ここに問い合わせ内容を入力してください")
         if st.button("Gemini API を実行"):
-            # 以下のプロンプトは、島や地形、さらに行政区の境界情報を考慮した最適なスピーカー配置案を提案するためのものです。
             full_prompt = (
                 "あなたは、災害対策のために公共空間にスピーカーを配置する専門家です。以下の条件と地形情報、行政区の境界情報を考慮し、最適なスピーカー配置案を提案してください。\n\n"
                 "【条件】\n"
                 "- スピーカーは、被災地域全体に均一に音声を届ける必要がある。\n"
-                "- スピーカー同士は、お互いの干渉を避けるために、原則として300m以上離れるように配置する。\n"
+                "- スピーカー同士は、お互いの干渉を避けるために、原則として300m以上離れているように配置する。\n"
                 "- 各スピーカーは、設置場所の地形（山、谷、海岸、島、樹林など）や障害物、さらに行政区（市区町村や区など）の境界や特徴を考慮し、最適な方向に向ける必要がある。\n"
                 "- 行政区の境界を尊重し、各区内で均一なカバーと、隣接区との連携を考慮してください。\n\n"
                 "【出力形式】\n"
-                "- 提案する各スピーカーの配置は、必ず以下の形式で出力してください。\n"
+                "- 各スピーカーの配置は必ず以下の形式で出力してください。\n"
                 "  「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z, 行政区: AAA」\n"
                 "  （例：緯度 34.254000, 経度 133.208000, 方向 270, 行政区: △△区）\n"
                 "- 各配置について、その設置理由や、考慮した地形および行政区の特徴も簡潔に説明してください。\n\n"
