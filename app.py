@@ -10,7 +10,7 @@ import branca.colormap as cm
 import requests
 import re
 
-# st.set_page_config() は他の Streamlit コマンドよりも先に呼び出す必要があります
+# st.set_page_config() は最初に呼び出す必要があります
 st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
 
 # ---------- Custom CSS for UI styling ----------
@@ -59,7 +59,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # ------------------------------------------------------------------
 # 定数／設定（APIキー、モデル）
 # ------------------------------------------------------------------
-API_KEY = st.secrets["general"]["api_key"]  # secrets.toml に [general] セクションで設定してください
+API_KEY = st.secrets["general"]["api_key"]  # secrets.tomlに [general] セクションで設定してください
 MODEL_NAME = "gemini-2.0-flash"
 
 # ----------------------------------------------------------------
@@ -141,29 +141,39 @@ def export_csv(data, columns):
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
     各グリッド点における音圧レベルを計算し、2D配列（sound_grid）として返す関数。
-    スピーカーの方向性は、角度差に応じたコサイン関数で減衰を表現します。
+    各スピーカーの影響は、距離と方向性（コサイン補正）に基づいて計算されます。
+    地形や他の減衰効果は考慮していませんが、配置の相対比較には有用です。
     """
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
-    grid_coords = np.stack([grid_lat.ravel(), grid_lon.ravel()], axis=1)
-
+    
+    # grid_lat, grid_lon は2D配列（度単位）
     for spk in speakers:
         lat, lon, dirs = spk
-        spk_coords = np.array([lat, lon])
-        distances = np.sqrt(np.sum((grid_coords - spk_coords)**2, axis=1)) * 111320
-        distances[distances < 1] = 1
-        bearings = np.degrees(np.arctan2(grid_coords[:, 1] - lon, grid_coords[:, 0] - lat)) % 360
-        power = np.zeros_like(distances)
+        # 各グリッド点との緯度・経度差（度単位）
+        dlat = grid_lat - lat
+        dlon = grid_lon - lon
+        # 経度は緯度により長さが変わるので補正（小さな領域の場合）
+        distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * np.cos(np.radians(lat)))**2)
+        distance[distance < 1] = 1
+        # 各グリッド点への方位（度単位）: arctan2(東西, 南北) を使用
+        bearing = (np.degrees(np.arctan2(dlon, dlat))) % 360
+        
+        power = np.zeros_like(distance)
         for direction in dirs:
-            angle_diff = np.abs(bearings - direction) % 360
+            angle_diff = np.abs(bearing - direction) % 360
+            angle_diff = np.minimum(angle_diff, 360 - angle_diff)
             directional_factor = np.maximum(0, np.cos(np.radians(angle_diff)))
-            power += directional_factor * 10 ** ((L0 - 20 * np.log10(distances)) / 10)
-        power[distances > r_max] = 0
-        power_sum += power.reshape(Nx, Ny)
+            intensity = directional_factor * (10 ** ((L0 - 20 * np.log10(distance)) / 10))
+            power += intensity
+        # スピーカーの影響範囲外は0に
+        power[distance > r_max] = 0
+        power_sum += power
     
+    # 複数スピーカーのパワーを合成し、dBに変換
     sound_grid = np.full_like(power_sum, np.nan)
-    positive_mask = power_sum > 0
-    sound_grid[positive_mask] = 10 * np.log10(power_sum[positive_mask])
+    valid = power_sum > 0
+    sound_grid[valid] = 10 * np.log10(power_sum[valid])
     sound_grid = np.clip(sound_grid, L0 - 40, L0)
     return sound_grid
 
@@ -192,7 +202,7 @@ def calculate_objective(speakers, target, L0, r_max, grid_lat, grid_lon):
 
 def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, iterations=10, delta=0.0001):
     """
-    各スピーカーの位置を微調整し、目標音圧レベルとの差（二乗誤差）を最小化する自動最適配置アルゴリズム。
+    各スピーカーの位置を微調整し、目標音圧レベルとの差（二乗平均誤差）を最小化する自動最適配置アルゴリズム。
     """
     optimized = [list(spk) for spk in speakers]
     current_obj = calculate_objective(optimized, target, L0, r_max, grid_lat, grid_lon)
@@ -436,7 +446,7 @@ def main():
             full_prompt = generate_gemini_prompt(gemini_query)
             result = call_gemini_api(full_prompt)
             st.session_state.gemini_result = result
-            st.session_state.gemini_parsed = False
+            st.session_state.gemini_parsed = False  # 新たな回答があれば解析フラグをリセット
             st.success("Gemini API の実行が完了しました")
     
     # メインパネル：地図とヒートマップの表示
@@ -517,9 +527,8 @@ def main():
                 if coords:
                     st.markdown("##### 以下の座標を検出しました。地図に追加します。")
                     for (lat, lon) in coords:
-                        # 同一座標が既に追加されていなければ追加
                         if not any(abs(lat - s[0]) < 1e-6 and abs(lon - s[1]) < 1e-6 for s in st.session_state.speakers):
-                            st.session_state.speakers.append([lat, lon, [0.0]])  # 方向は仮設定
+                            st.session_state.speakers.append([lat, lon, [0.0]])
                             st.write(f"- 緯度: {lat}, 経度: {lon} を追加")
                     st.session_state.gemini_parsed = True
                     st.session_state.heatmap_data = None
