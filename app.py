@@ -147,7 +147,6 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
     
-    # grid_lat, grid_lon は2D配列（度単位）
     for spk in speakers:
         lat, lon, dirs = spk
         dlat = grid_lat - lat
@@ -310,10 +309,9 @@ def extract_coords_and_dir_from_text(text):
 # ----------------------------------------------------------------
 def parse_speaker_input(text):
     """
-    入力欄に貼り付けられた固定形式の文字列から、
-    (lat, lon, direction) を抽出する関数。
+    入力欄に貼り付けられた固定形式の文字列から、(lat, lon, direction) を抽出する関数。
     対応例：
-      "緯度 34.254000, 経度 133.208000, 方向 270" または
+      "緯度 34.254000, 経度 133.208000, 方向 270"
       "緯度: 34.273000, 経度: 133.215000, 方向: 225"
     """
     pattern = r"緯度[:：]?\s*([-\d]+\.\d+),\s*経度[:：]?\s*([-\d]+\.\d+),\s*方向[:：]?\s*([-\d]+(?:\.\d+)?)"
@@ -368,7 +366,7 @@ def main():
             st.session_state.heatmap_data = None
         
         # スピーカー追加：固定形式の入力を想定
-        new_speaker = st.text_input("スピーカー追加",
+        new_speaker = st.text_input("スピーカー追加", 
                                     placeholder="例: 緯度 34.254000, 経度 133.208000, 方向 270 または 緯度: 34.273000, 経度: 133.215000, 方向: 225")
         if st.button("スピーカー追加"):
             parsed = parse_speaker_input(new_speaker)
@@ -426,6 +424,7 @@ def main():
         if st.button("スピーカーリセット"):
             st.session_state.speakers = []
             st.session_state.heatmap_data = None
+            st.session_state.gemini_result = None  # Geminiのレスポンスもクリア
             st.success("スピーカーをリセットしました")
         
         # パラメータ調整
@@ -436,7 +435,6 @@ def main():
         target_default = st.session_state.L0 - 20
         target_level = st.slider("目標音圧レベル (dB)", st.session_state.L0 - 40, st.session_state.L0, target_default)
         if st.button("自動最適配置を実行"):
-            # ヒートマップ表示領域をスピーカー全体に合わせて動的に計算
             if st.session_state.speakers:
                 lats = [s[0] for s in st.session_state.speakers]
                 lons = [s[1] for s in st.session_state.speakers]
@@ -481,8 +479,7 @@ def main():
             st.session_state.gemini_result = result
             st.success("Gemini API の実行が完了しました")
     
-    # メインパネル：地図とヒートマップの表示
-    # ヒートマップのグリッドはスピーカー全体の領域に合わせて動的に生成
+    # メインパネル：地図とヒートマップの表示（スピーカー全体の領域に合わせる）
     if st.session_state.speakers:
         lats = [s[0] for s in st.session_state.speakers]
         lons = [s[1] for s in st.session_state.speakers]
