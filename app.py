@@ -40,7 +40,7 @@ div.stButton > button:hover {
     background-color: #45a049;
 }
 
-/* テキスト入力のスタイル */
+/* テキスト入力とテキストエリアのスタイル */
 div.stTextInput>div>input, div.stTextArea>div>textarea {
     font-size: 16px;
     padding: 8px;
@@ -59,7 +59,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # ------------------------------------------------------------------
 # 定数／設定（APIキー、モデル）
 # ------------------------------------------------------------------
-API_KEY = st.secrets["general"]["api_key"]  # secrets.toml に [general] セクションで設定
+API_KEY = st.secrets["general"]["api_key"]  # secrets.toml に [general] セクションで設定してください
 MODEL_NAME = "gemini-2.0-flash"
 
 # ----------------------------------------------------------------
@@ -147,17 +147,19 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
     
+    # grid_lat, grid_lon は2D配列（度単位）
     for spk in speakers:
         lat, lon, dirs = spk
         dlat = grid_lat - lat
         dlon = grid_lon - lon
+        # 経度補正（緯度依存）
         distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * np.cos(np.radians(lat)))**2)
         distance[distance < 1] = 1
+        # 各グリッド点への方位（度単位）
         bearing = (np.degrees(np.arctan2(dlon, dlat))) % 360
         power = np.zeros_like(distance)
         for direction in dirs:
             angle_diff = np.abs(bearing - direction) % 360
-            # 後方も最低 0.3 倍の音圧があるようにする
             directional_factor = np.where(np.cos(np.radians(angle_diff)) > 0.3,
                                           np.cos(np.radians(angle_diff)),
                                           0.3)
@@ -287,10 +289,11 @@ def call_gemini_api(query):
 # ----------------------------------------------------------------
 def extract_coords_and_dir_from_text(text):
     """
-    説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」形式の情報を抽出する。
-    見つかった情報をリストで返す。方向は文字列（例: "N", "SW"）として返す。
+    説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」形式の情報を抽出する関数。
+    ここで Z は数字として認識されます（例: 270）。
+    見つかった情報をリストで返す。例: [(34.254000, 133.208000, 270)]
     """
-    pattern = r"緯度\s+([-\d]+\.\d{6}),\s+経度\s+([-\d]+\.\d{6}),\s+方向\s+([NESWnesw]{1,3})"
+    pattern = r"緯度\s+([-\d]+\.\d+),\s+経度\s+([-\d]+\.\d+),\s+方向\s+([-\d]+(?:\.\d+)?)"
     matches = re.findall(pattern, text)
     results = []
     for lat_str, lon_str, dir_str in matches:
@@ -302,6 +305,27 @@ def extract_coords_and_dir_from_text(text):
         except ValueError:
             continue
     return results
+
+# ----------------------------------------------------------------
+# Module: Utility for parsing speaker addition input
+# ----------------------------------------------------------------
+def parse_speaker_input(text):
+    """
+    入力欄に貼り付けられた、固定形式「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」
+    の文字列から、(lat, lon, direction) を抽出する関数。
+    """
+    pattern = r"緯度\s+([-\d]+\.\d+),\s+経度\s+([-\d]+\.\d+),\s+方向\s+([-\d]+(?:\.\d+)?)"
+    match = re.search(pattern, text)
+    if match:
+        lat_str, lon_str, dir_str = match.groups()
+        try:
+            lat = float(lat_str)
+            lon = float(lon_str)
+            direction = parse_direction(dir_str)
+            return lat, lon, direction
+        except ValueError:
+            return None
+    return None
 
 # ----------------------------------------------------------------
 # Module: Main Application (UI)
@@ -341,19 +365,18 @@ def main():
             st.success("CSVファイルを読み込みました。")
             st.session_state.heatmap_data = None
         
-        # スピーカー追加
-        new_speaker = st.text_input("スピーカー追加 (緯度,経度,方向1,方向2...)",
-                                    placeholder="例: 34.2579,133.2072,N,E")
+        # スピーカー追加：固定形式の入力を想定
+        new_speaker = st.text_input("スピーカー追加", 
+                                    placeholder="例: 緯度 34.254000, 経度 133.208000, 方向 270")
         if st.button("スピーカー追加"):
-            try:
-                parts = new_speaker.split(",")
-                lat, lon = float(parts[0]), float(parts[1])
-                directions = [parse_direction(dir_str) for dir_str in parts[2:]]
-                st.session_state.speakers.append([lat, lon, directions])
+            parsed = parse_speaker_input(new_speaker)
+            if parsed:
+                lat, lon, direction = parsed
+                st.session_state.speakers.append([lat, lon, [direction]])
                 st.session_state.heatmap_data = None
-                st.success(f"スピーカーを追加しました: {lat}, {lon}, {directions}")
-            except (ValueError, IndexError) as e:
-                st.error("スピーカーの追加に失敗しました。形式が正しくない可能性があります。(緯度,経度,方向...)")
+                st.success(f"スピーカーを追加しました: 緯度 {lat}, 経度 {lon}, 方向 {direction}")
+            else:
+                st.error("入力形式が正しくありません。形式は『緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z』で入力してください。")
         
         # スピーカー削除・編集機能
         if st.session_state.speakers:
@@ -382,7 +405,7 @@ def main():
                 spk = st.session_state.speakers[st.session_state.edit_index]
                 new_lat = st.text_input("新しい緯度", value=str(spk[0]), key="edit_lat")
                 new_lon = st.text_input("新しい経度", value=str(spk[1]), key="edit_lon")
-                new_dirs = st.text_input("新しい方向（カンマ区切り、例: N,E,S,W）", 
+                new_dirs = st.text_input("新しい方向（カンマ区切り、例: N,E,S,Wまたは数値）", 
                                          value=",".join(str(d) for d in spk[2]), key="edit_dirs")
                 submitted = st.form_submit_button("編集内容を保存")
                 if submitted:
@@ -518,12 +541,11 @@ def main():
             st.markdown("#### 説明部分")
             st.write(explanation_text)
             
-            # 座標＋方向抽出：形式「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」
+            # 固定形式の情報抽出：例「緯度 34.254000, 経度 133.208000, 方向 270」
             coords_dirs = extract_coords_and_dir_from_text(explanation_text)
             if coords_dirs:
                 st.markdown("##### 以下の座標と方向を検出しました。地図に追加します。")
                 for (lat, lon, direction) in coords_dirs:
-                    # 同一の座標が既に追加されていないか確認
                     if not any(abs(lat - s[0]) < 1e-6 and abs(lon - s[1]) < 1e-6 for s in st.session_state.speakers):
                         st.session_state.speakers.append([lat, lon, [direction]])
                         st.write(f"- 緯度: {lat}, 経度: {lon}, 方向: {direction} を追加")
