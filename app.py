@@ -10,7 +10,7 @@ import branca.colormap as cm
 import requests
 import re
 
-# st.set_page_config() は最初に呼び出す必要があります
+# st.set_page_config() は必ず最初に呼び出す
 st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
 
 # ---------- Custom CSS for UI styling ----------
@@ -41,7 +41,7 @@ div.stButton > button:hover {
 }
 
 /* テキスト入力のスタイル */
-div.stTextInput>div>input {
+div.stTextInput>div>input, div.stTextArea>div>textarea {
     font-size: 16px;
     padding: 8px;
 }
@@ -59,7 +59,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # ------------------------------------------------------------------
 # 定数／設定（APIキー、モデル）
 # ------------------------------------------------------------------
-API_KEY = st.secrets["general"]["api_key"]  # secrets.tomlに [general] セクションで設定してください
+API_KEY = st.secrets["general"]["api_key"]  # secrets.toml に [general] セクションで設定
 MODEL_NAME = "gemini-2.0-flash"
 
 # ----------------------------------------------------------------
@@ -72,8 +72,8 @@ DIRECTION_MAPPING = {
 
 def parse_direction(direction_str):
     """
-    文字列から方向（度数）に変換する関数。
-    入力は "N", "E", "S", "W" などの文字列も、数字も受け付けます（大文字・小文字は区別しません）。
+    入力文字列から方向（度数）に変換する関数。
+    "N", "E", "S", "W"（大文字・小文字問わず）も数字も受け付けます。
     例: "N" -> 0, "sw" -> 225, "45" -> 45.0
     """
     direction_str = direction_str.strip().upper()
@@ -93,9 +93,8 @@ def load_csv(file):
     CSVファイルを読み込み、スピーカーと計測データを抽出する関数。
     
     Returns:
-        (speakers, measurements)
-        speakers: [[lat, lon, [dir1, dir2, ...]], ...]
-        measurements: [[lat, lon, db], ...]
+      speakers: [[lat, lon, [dir1, dir2, ...]], ...]
+      measurements: [[lat, lon, db], ...]
     """
     try:
         df = pd.read_csv(file)
@@ -103,7 +102,8 @@ def load_csv(file):
         for _, row in df.iterrows():
             if not pd.isna(row.get("スピーカー緯度")):
                 lat, lon = row["スピーカー緯度"], row["スピーカー経度"]
-                directions = [parse_direction(row.get(f"方向{i}", "")) for i in range(1, 4) if not pd.isna(row.get(f"方向{i}"))]
+                directions = [parse_direction(row.get(f"方向{i}", "")) 
+                              for i in range(1, 4) if not pd.isna(row.get(f"方向{i}"))]
                 speakers.append([lat, lon, directions])
             if not pd.isna(row.get("計測位置緯度")):
                 lat, lon, db = row["計測位置緯度"], row["計測位置経度"], row.get("計測デシベル", 0)
@@ -147,15 +147,12 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
     
-    # grid_lat, grid_lon は2D配列（度単位）
     for spk in speakers:
         lat, lon, dirs = spk
         dlat = grid_lat - lat
         dlon = grid_lon - lon
-        # 経度補正（緯度依存）
         distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * np.cos(np.radians(lat)))**2)
         distance[distance < 1] = 1
-        # 各グリッド点への方位（度単位）
         bearing = (np.degrees(np.arctan2(dlon, dlat))) % 360
         power = np.zeros_like(distance)
         for direction in dirs:
@@ -233,7 +230,7 @@ def generate_gemini_prompt(user_query):
     ユーザーの問い合わせと地図上のスピーカー配置、音圧分布の概要に加え、
     海など設置に困難な場所は除外、スピーカー同士は300m程度離れている場所、
     さらに山や生えている木の種類などの地形情報も加味して、設置が可能な安全かつ効果的な場所を提案するよう指示してください。
-    座標表記形式は「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」に固定してください。
+    また、【座標表記形式】は「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」に固定してください。
     """
     speakers = st.session_state.speakers if "speakers" in st.session_state else []
     num_speakers = len(speakers)
@@ -262,7 +259,7 @@ def generate_gemini_prompt(user_query):
         "設置が可能な安全かつ効果的な場所を提案してください。\n"
         f"ユーザーからの問い合わせ: {user_query}\n"
         "上記の情報に基づき、スピーカー配置や音圧分布に関する分析・改善案・提案を具体的に述べてください。\n"
-        "【座標表記形式】 緯度 xxx.xxxxxx, 経度 yyy.yyyyyy で統一してください。"
+        "【座標表記形式】 緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z で統一してください。"
     )
     return prompt
 
@@ -286,24 +283,25 @@ def call_gemini_api(query):
         return {}
 
 # ----------------------------------------------------------------
-# Module: Utility for extracting coordinates from text
+# Module: Utility for extracting coordinates and direction from text
 # ----------------------------------------------------------------
-def extract_coordinates_from_text(text):
+def extract_coords_and_dir_from_text(text):
     """
-    説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」形式の座標をすべて抽出する。
-    見つかった座標をリストで返す。
+    説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」形式の情報を抽出する。
+    見つかった情報をリストで返す。方向は文字列（例: "N", "SW"）として返す。
     """
-    pattern = r"緯度\s+([-\d]+\.\d{6}),\s+経度\s+([-\d]+\.\d{6})"
+    pattern = r"緯度\s+([-\d]+\.\d{6}),\s+経度\s+([-\d]+\.\d{6}),\s+方向\s+([NESWnesw]{1,3})"
     matches = re.findall(pattern, text)
-    coords = []
-    for lat_str, lon_str in matches:
+    results = []
+    for lat_str, lon_str, dir_str in matches:
         try:
             lat = float(lat_str)
             lon = float(lon_str)
-            coords.append((lat, lon))
+            direction = parse_direction(dir_str)
+            results.append((lat, lon, direction))
         except ValueError:
             continue
-    return coords
+    return results
 
 # ----------------------------------------------------------------
 # Module: Main Application (UI)
@@ -344,7 +342,7 @@ def main():
             st.session_state.heatmap_data = None
         
         # スピーカー追加
-        new_speaker = st.text_input("スピーカー追加 (緯度,経度,方向1,方向2...)", 
+        new_speaker = st.text_input("スピーカー追加 (緯度,経度,方向1,方向2...)",
                                     placeholder="例: 34.2579,133.2072,N,E")
         if st.button("スピーカー追加"):
             try:
@@ -361,7 +359,7 @@ def main():
         if st.session_state.speakers:
             options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" 
                        for i, spk in enumerate(st.session_state.speakers)]
-            selected_index = st.selectbox("スピーカーを選択", list(range(len(options))), 
+            selected_index = st.selectbox("スピーカーを選択", list(range(len(options))),
                                           format_func=lambda i: options[i])
             col_del, col_edit = st.columns(2)
             with col_del:
@@ -446,7 +444,6 @@ def main():
             full_prompt = generate_gemini_prompt(gemini_query)
             result = call_gemini_api(full_prompt)
             st.session_state.gemini_result = result
-            # 毎回新しいレスポンスを処理するため、gemini_parsed はリセットせず、常に座標抽出を行う
             st.success("Gemini API の実行が完了しました")
     
     # メインパネル：地図とヒートマップの表示
@@ -521,17 +518,18 @@ def main():
             st.markdown("#### 説明部分")
             st.write(explanation_text)
             
-            # 座標抽出：形式「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」
-            coords = extract_coordinates_from_text(explanation_text)
-            if coords:
-                st.markdown("##### 以下の座標を検出しました。地図に追加します。")
-                for (lat, lon) in coords:
+            # 座標＋方向抽出：形式「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」
+            coords_dirs = extract_coords_and_dir_from_text(explanation_text)
+            if coords_dirs:
+                st.markdown("##### 以下の座標と方向を検出しました。地図に追加します。")
+                for (lat, lon, direction) in coords_dirs:
+                    # 同一の座標が既に追加されていないか確認
                     if not any(abs(lat - s[0]) < 1e-6 and abs(lon - s[1]) < 1e-6 for s in st.session_state.speakers):
-                        st.session_state.speakers.append([lat, lon, [0.0]])
-                        st.write(f"- 緯度: {lat}, 経度: {lon} を追加")
+                        st.session_state.speakers.append([lat, lon, [direction]])
+                        st.write(f"- 緯度: {lat}, 経度: {lon}, 方向: {direction} を追加")
                 st.session_state.heatmap_data = None
             else:
-                st.info("説明文から座標は検出されませんでした。")
+                st.info("説明文から固定形式の座標と方向は検出されませんでした。")
         else:
             st.error("説明部分の抽出に失敗しました。JSON構造を確認してください。")
         
