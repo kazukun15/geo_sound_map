@@ -56,7 +56,8 @@ def load_csv(file):
         for _, row in df.iterrows():
             if not pd.isna(row.get("スピーカー緯度")):
                 lat, lon = row["スピーカー緯度"], row["スピーカー経度"]
-                directions = [parse_direction(row.get(f"方向{i}", "")) for i in range(1, 4) if not pd.isna(row.get(f"方向{i}"))]
+                directions = [parse_direction(row.get(f"方向{i}", "")) 
+                              for i in range(1, 4) if not pd.isna(row.get(f"方向{i}"))]
                 speakers.append([lat, lon, directions])
             if not pd.isna(row.get("計測位置緯度")):
                 lat, lon, db = row["計測位置緯度"], row["計測位置経度"], row.get("計測デシベル", 0)
@@ -95,7 +96,7 @@ def export_csv(data, columns):
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
     各グリッド点における音圧レベルを計算し、2D配列（sound_grid）として返す関数。
-    各スピーカーの方向性は、角度差に応じたコサイン関数で減衰を表現します。
+    スピーカーの方向性は、角度差に応じたコサイン関数で減衰を表現します。
     """
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
@@ -106,12 +107,10 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
         spk_coords = np.array([lat, lon])
         distances = np.sqrt(np.sum((grid_coords - spk_coords)**2, axis=1)) * 111320
         distances[distances < 1] = 1
-        # 角度計算
         bearings = np.degrees(np.arctan2(grid_coords[:, 1] - lon, grid_coords[:, 0] - lat)) % 360
         power = np.zeros_like(distances)
         for direction in dirs:
             angle_diff = np.abs(bearings - direction) % 360
-            # コサイン関数を使って方向性を考慮（角度差が大きいほど減衰）
             directional_factor = np.maximum(0, np.cos(np.radians(angle_diff)))
             power += directional_factor * 10 ** ((L0 - 20 * np.log10(distances)) / 10)
         power[distances > r_max] = 0
@@ -180,8 +179,8 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, 
 def generate_gemini_prompt(user_query):
     """
     ユーザーの問い合わせと地図上のスピーカー配置、音圧分布の概要に加え、
-    海など設置に困難な場所は除外、スピーカー同士は300m程度離れている場所、
-    さらに山や生えている木の種類など地形情報も加味して、設置が可能な安全かつ効果的な場所を提案するよう指示してください。
+    海など設置に困難な場所は除外、スピーカー同士は200m程度離れている場所、
+    さらに山や生えている木の種類などの地形情報も加味して、設置が可能な安全かつ効果的な場所を提案するよう指示してください。
     座標表記形式は「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」に固定してください。
     """
     speakers = st.session_state.speakers if "speakers" in st.session_state else []
@@ -206,7 +205,7 @@ def generate_gemini_prompt(user_query):
         f"{speaker_info}"
         f"現在の音圧レベルの範囲は概ね {sound_range} です。\n"
         "海など設置に困難な場所は除外してください。\n"
-        "また、スピーカー同士は300m程度離れている場所を考慮し、"
+        "また、スピーカー同士は200m程度離れている場所を考慮し、"
         "さらに山や生えている木の種類などの地形情報も加味して、"
         "設置が可能な安全かつ効果的な場所を提案してください。\n"
         f"ユーザーからの問い合わせ: {user_query}\n"
@@ -306,9 +305,10 @@ def main():
             except (ValueError, IndexError) as e:
                 st.error("スピーカーの追加に失敗しました。形式が正しくない可能性があります。(緯度,経度,方向...)")
         
-        # スピーカー削除
+        # スピーカー削除機能
         if st.session_state.speakers:
-            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" for i, spk in enumerate(st.session_state.speakers)]
+            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" 
+                       for i, spk in enumerate(st.session_state.speakers)]
             selected_index = st.selectbox("削除するスピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
             if st.button("選択したスピーカーを削除"):
                 try:
@@ -447,7 +447,7 @@ def main():
                 if coords:
                     st.markdown("##### 以下の座標を検出しました。地図に追加します。")
                     for (lat, lon) in coords:
-                        # すでに同一座標が追加されていないかチェック（簡易的に）
+                        # 同一座標が既に追加されていなければ追加
                         if not any(abs(lat - s[0]) < 1e-6 and abs(lon - s[1]) < 1e-6 for s in st.session_state.speakers):
                             st.session_state.speakers.append([lat, lon, [0.0]])  # 方向は仮設定
                             st.write(f"- 緯度: {lat}, 経度: {lon} を追加")
