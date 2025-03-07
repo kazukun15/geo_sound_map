@@ -10,7 +10,7 @@ import branca.colormap as cm
 import requests
 import re
 
-# st.set_page_config() は最初に呼び出す必要があります
+# st.set_page_config() は最初に呼び出します
 st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
 
 # ---------- Custom CSS for UI styling ----------
@@ -102,7 +102,8 @@ def load_csv(file):
         for _, row in df.iterrows():
             if not pd.isna(row.get("スピーカー緯度")):
                 lat, lon = row["スピーカー緯度"], row["スピーカー経度"]
-                directions = [parse_direction(row.get(f"方向{i}", "")) for i in range(1, 4) if not pd.isna(row.get(f"方向{i}"))]
+                directions = [parse_direction(row.get(f"方向{i}", "")) 
+                              for i in range(1, 4) if not pd.isna(row.get(f"方向{i}"))]
                 speakers.append([lat, lon, directions])
             if not pd.isna(row.get("計測位置緯度")):
                 lat, lon, db = row["計測位置緯度"], row["計測位置経度"], row.get("計測デシベル", 0)
@@ -141,36 +142,32 @@ def export_csv(data, columns):
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
     各グリッド点における音圧レベルを計算し、2D配列（sound_grid）として返す関数。
-    各スピーカーの影響は、距離と方向性（コサイン補正）に基づいて計算されます。
-    地形や他の減衰効果は考慮していませんが、配置の相対比較には有用です。
+    各スピーカーの影響は、距離と方向性（コサイン補正＋最低 0.3 倍）に基づいて計算されます。
     """
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
     
-    # grid_lat, grid_lon は2D配列（度単位）
+    # grid_lat, grid_lon は2D配列（度単位）なので、各グリッド点との距離は以下で計算
     for spk in speakers:
         lat, lon, dirs = spk
-        # 各グリッド点との緯度・経度差（度単位）
         dlat = grid_lat - lat
         dlon = grid_lon - lon
-        # 経度は緯度により長さが変わるので補正（小さな領域の場合）
+        # 経度は緯度に依存して補正
         distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * np.cos(np.radians(lat)))**2)
         distance[distance < 1] = 1
-        # 各グリッド点への方位（度単位）: arctan2(東西, 南北) を使用
+        # 各グリッド点への方位
         bearing = (np.degrees(np.arctan2(dlon, dlat))) % 360
-        
         power = np.zeros_like(distance)
         for direction in dirs:
             angle_diff = np.abs(bearing - direction) % 360
-            angle_diff = np.minimum(angle_diff, 360 - angle_diff)
-            directional_factor = np.maximum(0, np.cos(np.radians(angle_diff)))
+            # 後方でも最低 0.3 の強度を保証
+            directional_factor = np.where(np.cos(np.radians(angle_diff)) > 0.3, 
+                                          np.cos(np.radians(angle_diff)), 
+                                          0.3)
             intensity = directional_factor * (10 ** ((L0 - 20 * np.log10(distance)) / 10))
             power += intensity
-        # スピーカーの影響範囲外は0に
         power[distance > r_max] = 0
         power_sum += power
-    
-    # 複数スピーカーのパワーを合成し、dBに変換
     sound_grid = np.full_like(power_sum, np.nan)
     valid = power_sum > 0
     sound_grid[valid] = 10 * np.log10(power_sum[valid])
@@ -527,8 +524,9 @@ def main():
                 if coords:
                     st.markdown("##### 以下の座標を検出しました。地図に追加します。")
                     for (lat, lon) in coords:
+                        # 同一座標が既に追加されていなければ追加
                         if not any(abs(lat - s[0]) < 1e-6 and abs(lon - s[1]) < 1e-6 for s in st.session_state.speakers):
-                            st.session_state.speakers.append([lat, lon, [0.0]])
+                            st.session_state.speakers.append([lat, lon, [0.0]])  # 方向は仮設定
                             st.write(f"- 緯度: {lat}, 経度: {lon} を追加")
                     st.session_state.gemini_parsed = True
                     st.session_state.heatmap_data = None
