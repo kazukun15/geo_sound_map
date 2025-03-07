@@ -10,6 +10,9 @@ import branca.colormap as cm
 import requests
 import re
 
+# st.set_page_config() は他の Streamlit コマンドよりも先に呼び出す必要があります
+st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
+
 # ---------- Custom CSS for UI styling ----------
 custom_css = """
 <style>
@@ -56,7 +59,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # ------------------------------------------------------------------
 # 定数／設定（APIキー、モデル）
 # ------------------------------------------------------------------
-API_KEY = st.secrets["general"]["api_key"]  # secrets.tomlに [general] セクションで設定してください
+API_KEY = st.secrets["general"]["api_key"]  # secrets.toml に [general] セクションで設定してください
 MODEL_NAME = "gemini-2.0-flash"
 
 # ----------------------------------------------------------------
@@ -99,8 +102,7 @@ def load_csv(file):
         for _, row in df.iterrows():
             if not pd.isna(row.get("スピーカー緯度")):
                 lat, lon = row["スピーカー緯度"], row["スピーカー経度"]
-                directions = [parse_direction(row.get(f"方向{i}", "")) 
-                              for i in range(1, 4) if not pd.isna(row.get(f"方向{i}"))]
+                directions = [parse_direction(row.get(f"方向{i}", "")) for i in range(1, 4) if not pd.isna(row.get(f"方向{i}"))]
                 speakers.append([lat, lon, directions])
             if not pd.isna(row.get("計測位置緯度")):
                 lat, lon, db = row["計測位置緯度"], row["計測位置経度"], row.get("計測デシベル", 0)
@@ -190,7 +192,7 @@ def calculate_objective(speakers, target, L0, r_max, grid_lat, grid_lon):
 
 def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, iterations=10, delta=0.0001):
     """
-    各スピーカーの位置を微調整し、目標音圧レベルとの差（二乗平均誤差）を最小化する自動最適配置アルゴリズム。
+    各スピーカーの位置を微調整し、目標音圧レベルとの差（二乗誤差）を最小化する自動最適配置アルゴリズム。
     """
     optimized = [list(spk) for spk in speakers]
     current_obj = calculate_objective(optimized, target, L0, r_max, grid_lat, grid_lon)
@@ -300,7 +302,6 @@ def extract_coordinates_from_text(text):
 # Module: Main Application (UI)
 # ----------------------------------------------------------------
 def main():
-    st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
     st.title("防災スピーカー音圧可視化マップ")
     
     # セッションステート初期化
@@ -320,7 +321,6 @@ def main():
         st.session_state.r_max = 500
     if "gemini_parsed" not in st.session_state:
         st.session_state.gemini_parsed = False
-    # 編集中のスピーカーインデックスを保持するためのキー
     if "edit_index" not in st.session_state:
         st.session_state.edit_index = None
     
@@ -353,8 +353,7 @@ def main():
         
         # スピーカー削除・編集機能
         if st.session_state.speakers:
-            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" 
-                       for i, spk in enumerate(st.session_state.speakers)]
+            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" for i, spk in enumerate(st.session_state.speakers)]
             selected_index = st.selectbox("スピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
             col_del, col_edit = st.columns(2)
             with col_del:
@@ -371,7 +370,7 @@ def main():
         else:
             st.info("スピーカーがありません。")
         
-        # 編集フォーム（表示中の場合のみ）
+        # 編集フォーム
         if st.session_state.edit_index is not None:
             with st.form("edit_form"):
                 spk = st.session_state.speakers[st.session_state.edit_index]
@@ -387,7 +386,7 @@ def main():
                         st.session_state.speakers[st.session_state.edit_index] = [lat_val, lon_val, directions_val]
                         st.session_state.heatmap_data = None
                         st.success("スピーカー情報が更新されました")
-                        st.session_state.edit_index = None  # 編集終了
+                        st.session_state.edit_index = None
                     except Exception as e:
                         st.error(f"編集内容の保存に失敗しました: {e}")
         
@@ -437,10 +436,10 @@ def main():
             full_prompt = generate_gemini_prompt(gemini_query)
             result = call_gemini_api(full_prompt)
             st.session_state.gemini_result = result
-            st.session_state.gemini_parsed = False  # 新たな回答があれば解析フラグをリセット
+            st.session_state.gemini_parsed = False
             st.success("Gemini API の実行が完了しました")
     
-    # メインパネル：地図とヒートマップ表示
+    # メインパネル：地図とヒートマップの表示
     col1, col2 = st.columns([3, 1])
     with col1:
         lat_min = st.session_state.map_center[0] - 0.01
