@@ -147,12 +147,15 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
     
+    # grid_lat, grid_lon は2D配列（度単位）
     for spk in speakers:
         lat, lon, dirs = spk
         dlat = grid_lat - lat
         dlon = grid_lon - lon
+        # 経度補正（緯度依存）
         distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * np.cos(np.radians(lat)))**2)
         distance[distance < 1] = 1
+        # 各グリッド点への方位（度単位）
         bearing = (np.degrees(np.arctan2(dlon, dlat))) % 360
         power = np.zeros_like(distance)
         for direction in dirs:
@@ -288,10 +291,13 @@ def extract_coords_and_dir_from_text(text):
     """
     説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」形式の情報を抽出する関数。
     Zは数値として認識されます（例: 270）。
-    対応する文字列にはコロンがある場合とない場合の両方に対応します。
+    コロン有り／無しの両方に対応します。
+    例: "緯度 34.254000, 経度 133.208000, 方向 270" または
+         "34.284500, 133.104500, 方向 0" または
+         "緯度: 34.273000, 経度: 133.215000, 方向: 225"
     見つかった情報をリストで返す。例: [(34.254000, 133.208000, 270)]
     """
-    pattern = r"緯度[:：]?\s*([-\d]+\.\d+),\s*経度[:：]?\s*([-\d]+\.\d+),\s*方向[:：]?\s*([-\d]+(?:\.\d+)?)"
+    pattern = r"(?:緯度[:：]?\s*)?([-\d]+\.\d+),\s*(?:経度[:：]?\s*)?([-\d]+\.\d+),\s*方向[:：]?\s*([-\d]+(?:\.\d+)?)"
     matches = re.findall(pattern, text)
     results = []
     for lat_str, lon_str, dir_str in matches:
@@ -313,8 +319,9 @@ def parse_speaker_input(text):
     対応例：
       "緯度 34.254000, 経度 133.208000, 方向 270"
       "緯度: 34.273000, 経度: 133.215000, 方向: 225"
+      "34.284500, 133.104500, 方向 0"
     """
-    pattern = r"緯度[:：]?\s*([-\d]+\.\d+),\s*経度[:：]?\s*([-\d]+\.\d+),\s*方向[:：]?\s*([-\d]+(?:\.\d+)?)"
+    pattern = r"^(?:緯度[:：]?\s*)?([-\d]+\.\d+),\s*(?:経度[:：]?\s*)?([-\d]+\.\d+),\s*方向[:：]?\s*([-\d]+(?:\.\d+)?)$"
     match = re.search(pattern, text)
     if match:
         lat_str, lon_str, dir_str = match.groups()
@@ -367,7 +374,7 @@ def main():
         
         # スピーカー追加：固定形式の入力を想定
         new_speaker = st.text_input("スピーカー追加", 
-                                    placeholder="例: 緯度 34.254000, 経度 133.208000, 方向 270 または 緯度: 34.273000, 経度: 133.215000, 方向: 225")
+                                    placeholder="例: 緯度 34.254000, 経度 133.208000, 方向 270\nまたは 34.284500, 133.104500, 方向 0")
         if st.button("スピーカー追加"):
             parsed = parse_speaker_input(new_speaker)
             if parsed:
@@ -376,7 +383,7 @@ def main():
                 st.session_state.heatmap_data = None
                 st.success(f"スピーカーを追加しました: 緯度 {lat}, 経度 {lon}, 方向 {direction}")
             else:
-                st.error("入力形式が正しくありません。形式は『緯度 34.254000, 経度 133.208000, 方向 270』で入力してください。")
+                st.error("入力形式が正しくありません。形式は『緯度 34.254000, 経度 133.208000, 方向 270』または『34.284500, 133.104500, 方向 0』で入力してください。")
         
         # スピーカー削除・編集機能
         if st.session_state.speakers:
