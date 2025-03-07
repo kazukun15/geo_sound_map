@@ -147,6 +147,7 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
     
+    # grid_lat, grid_lon は2D配列（度単位）
     for spk in speakers:
         lat, lon, dirs = spk
         dlat = grid_lat - lat
@@ -288,8 +289,8 @@ def extract_coords_and_dir_from_text(text):
     """
     説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」形式の情報を抽出する関数。
     Zは数値として認識されます（例: 270）。
+    対応する文字列にはコロンがある場合とない場合の両方に対応します。
     見つかった情報をリストで返す。例: [(34.254000, 133.208000, 270)]
-    対応する文字列にはコロンがある場合もない場合も両方認識します。
     """
     pattern = r"緯度[:：]?\s*([-\d]+\.\d+),\s*経度[:：]?\s*([-\d]+\.\d+),\s*方向[:：]?\s*([-\d]+(?:\.\d+)?)"
     matches = re.findall(pattern, text)
@@ -309,9 +310,11 @@ def extract_coords_and_dir_from_text(text):
 # ----------------------------------------------------------------
 def parse_speaker_input(text):
     """
-    入力欄に貼り付けられた固定形式「緯度 34.254000, 経度 133.208000, 方向 270」
-    または「緯度: 34.273000, 経度: 133.215000, 方向: 225」
-    の文字列から (lat, lon, direction) を抽出する関数。
+    入力欄に貼り付けられた固定形式の文字列から、
+    (lat, lon, direction) を抽出する関数。
+    対応例：
+      "緯度 34.254000, 経度 133.208000, 方向 270" または
+      "緯度: 34.273000, 経度: 133.215000, 方向: 225"
     """
     pattern = r"緯度[:：]?\s*([-\d]+\.\d+),\s*経度[:：]?\s*([-\d]+\.\d+),\s*方向[:：]?\s*([-\d]+(?:\.\d+)?)"
     match = re.search(pattern, text)
@@ -365,7 +368,7 @@ def main():
             st.session_state.heatmap_data = None
         
         # スピーカー追加：固定形式の入力を想定
-        new_speaker = st.text_input("スピーカー追加", 
+        new_speaker = st.text_input("スピーカー追加",
                                     placeholder="例: 緯度 34.254000, 経度 133.208000, 方向 270 または 緯度: 34.273000, 経度: 133.215000, 方向: 225")
         if st.button("スピーカー追加"):
             parsed = parse_speaker_input(new_speaker)
@@ -433,10 +436,20 @@ def main():
         target_default = st.session_state.L0 - 20
         target_level = st.slider("目標音圧レベル (dB)", st.session_state.L0 - 40, st.session_state.L0, target_default)
         if st.button("自動最適配置を実行"):
-            lat_min = st.session_state.map_center[0] - 0.01
-            lat_max = st.session_state.map_center[0] + 0.01
-            lon_min = st.session_state.map_center[1] - 0.01
-            lon_max = st.session_state.map_center[1] + 0.01
+            # ヒートマップ表示領域をスピーカー全体に合わせて動的に計算
+            if st.session_state.speakers:
+                lats = [s[0] for s in st.session_state.speakers]
+                lons = [s[1] for s in st.session_state.speakers]
+                margin = 0.005
+                lat_min = min(lats) - margin
+                lat_max = max(lats) + margin
+                lon_min = min(lons) - margin
+                lon_max = max(lons) + margin
+            else:
+                lat_min = st.session_state.map_center[0] - 0.01
+                lat_max = st.session_state.map_center[0] + 0.01
+                lon_min = st.session_state.map_center[1] - 0.01
+                lon_max = st.session_state.map_center[1] + 0.01
             grid_lat, grid_lon = np.meshgrid(
                 np.linspace(lat_min, lat_max, 50),
                 np.linspace(lon_min, lon_max, 50)
@@ -469,46 +482,56 @@ def main():
             st.success("Gemini API の実行が完了しました")
     
     # メインパネル：地図とヒートマップの表示
-    col1, col2 = st.columns([3, 1])
-    with col1:
+    # ヒートマップのグリッドはスピーカー全体の領域に合わせて動的に生成
+    if st.session_state.speakers:
+        lats = [s[0] for s in st.session_state.speakers]
+        lons = [s[1] for s in st.session_state.speakers]
+        margin = 0.005
+        lat_min = min(lats) - margin
+        lat_max = max(lats) + margin
+        lon_min = min(lons) - margin
+        lon_max = max(lons) + margin
+        map_center = [(lat_min + lat_max) / 2, (lon_min + lon_max) / 2]
+    else:
         lat_min = st.session_state.map_center[0] - 0.01
         lat_max = st.session_state.map_center[0] + 0.01
         lon_min = st.session_state.map_center[1] - 0.01
         lon_max = st.session_state.map_center[1] + 0.01
-        grid_lat, grid_lon = np.meshgrid(
-            np.linspace(lat_min, lat_max, 100),
-            np.linspace(lon_min, lon_max, 100)
+        map_center = st.session_state.map_center
+    grid_lat, grid_lon = np.meshgrid(
+        np.linspace(lat_min, lat_max, 100),
+        np.linspace(lon_min, lon_max, 100)
+    )
+    
+    if st.session_state.heatmap_data is None:
+        st.session_state.heatmap_data = calculate_heatmap(
+            st.session_state.speakers,
+            st.session_state.L0,
+            st.session_state.r_max,
+            grid_lat,
+            grid_lon
         )
     
-        if st.session_state.heatmap_data is None:
-            st.session_state.heatmap_data = calculate_heatmap(
-                st.session_state.speakers,
-                st.session_state.L0,
-                st.session_state.r_max,
-                grid_lat,
-                grid_lon
-            )
-        
-        m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
-        for spk in st.session_state.speakers:
-            lat, lon, dirs = spk
-            popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})<br><b>方向</b>: {dirs}"
-            folium.Marker(
-                location=[lat, lon],
-                popup=folium.Popup(popup_text, max_width=300)
-            ).add_to(m)
-        
-        if st.session_state.heatmap_data:
-            HeatMap(
-                st.session_state.heatmap_data,
-                min_opacity=0.3,
-                max_opacity=0.8,
-                radius=15,
-                blur=20
-            ).add_to(m)
-        st_folium(m, width=700, height=500)
+    m = folium.Map(location=map_center, zoom_start=st.session_state.map_zoom)
+    for spk in st.session_state.speakers:
+        lat, lon, dirs = spk
+        popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})<br><b>方向</b>: {dirs}"
+        folium.Marker(
+            location=[lat, lon],
+            popup=folium.Popup(popup_text, max_width=300)
+        ).add_to(m)
     
-    with col2:
+    if st.session_state.heatmap_data:
+        HeatMap(
+            st.session_state.heatmap_data,
+            min_opacity=0.3,
+            max_opacity=0.8,
+            radius=15,
+            blur=20
+        ).add_to(m)
+    st_folium(m, width=700, height=500)
+    
+    with st.columns([3, 1])[1]:
         csv_data_speakers = export_csv(
             st.session_state.speakers,
             ["スピーカー緯度", "スピーカー経度", "方向1", "方向2", "方向3"]
