@@ -229,41 +229,26 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, 
 # ----------------------------------------------------------------
 def generate_gemini_prompt(user_query):
     """
-    ユーザーの問い合わせと地図上のスピーカー配置、音圧分布の概要に加え、
-    海など設置に困難な場所は除外、スピーカー同士は300m程度離れている場所、
-    さらに山や生えている木の種類などの地形情報も加味して、設置が可能な安全かつ効果的な場所を提案するよう指示してください。
-    また、【座標表記形式】は「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」で統一してください。
+    以下の条件と地形情報を考慮し、最適なスピーカー配置案を提案してください。
+
+    【条件】
+    - スピーカーは、被災地域全体に均一に音声を届ける必要がある。
+    - スピーカー同士は、お互いの干渉を避けるために、原則として300m以上離れるように配置する。
+    - 各スピーカーは、設置場所の地形（山、谷、海岸、島、樹林など）や障害物を考慮し、最適な方向に向ける必要がある。
+    - 島や複雑な地形がある場合は、斜面や海岸線などの特性を反映して、スピーカー配置が実際の音の伝播に与える影響を最小限にする配置を考える。
+
+    【出力形式】
+    - 提案する各スピーカーの配置は、必ず以下の形式で出力してください。
+      「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」
+      （例：緯度 34.254000, 経度 133.208000, 方向 270）
+    - 各配置について、その設置理由や考慮した地形の特徴も併せて簡潔に説明してください。
+
+    【ユーザーの問い合わせ】
+    {user_query}
+
+    上記の条件と情報に基づき、最も効果的なスピーカー配置案とその理由を、具体的かつ詳細に提案してください。
     """
-    speakers = st.session_state.speakers if "speakers" in st.session_state else []
-    num_speakers = len(speakers)
-    
-    if num_speakers > 5:
-        speaker_list = speakers[:5]
-        speaker_info = "以下のスピーカーが配置されています:\n"
-        for idx, spk in enumerate(speaker_list):
-            speaker_info += f"{idx+1}. 緯度: {spk[0]:.6f}, 経度: {spk[1]:.6f}, 方向: {spk[2]}\n"
-        speaker_info += f"他 {num_speakers - 5} 件のスピーカーも配置されています。\n"
-    elif num_speakers > 0:
-        speaker_info = "以下のスピーカーが配置されています:\n"
-        for idx, spk in enumerate(speakers):
-            speaker_info += f"{idx+1}. 緯度: {spk[0]:.6f}, 経度: {spk[1]:.6f}, 方向: {spk[2]}\n"
-    else:
-        speaker_info = "現在、スピーカーは配置されていません。\n"
-    
-    sound_range = f"{st.session_state.L0 - 40}dB ~ {st.session_state.L0}dB"
-    
-    prompt = (
-        f"{speaker_info}"
-        f"現在の音圧レベルの範囲は概ね {sound_range} です。\n"
-        "海など設置に困難な場所は除外してください。\n"
-        "また、スピーカー同士は300m程度離れている場所を考慮し、"
-        "さらに山や生えている木の種類などの地形情報も加味して、"
-        "設置が可能な安全かつ効果的な場所を提案してください。\n"
-        f"ユーザーからの問い合わせ: {user_query}\n"
-        "上記の情報に基づき、スピーカー配置や音圧分布に関する分析・改善案・提案を具体的に述べてください。\n"
-        "【座標表記形式】 緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z で統一してください。"
-    )
-    return prompt
+    return generate_gemini_prompt.__doc__.format(user_query=user_query)
 
 def call_gemini_api(query):
     """
@@ -292,8 +277,8 @@ def extract_coords_and_dir_from_text(text):
     説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」形式の情報を抽出する関数。
     Zは数値として認識されます（例: 270）。
     コロン有り／無しの両方に対応します。
-    例: "緯度 34.254000, 経度 133.208000, 方向 270" または
-         "34.284500, 133.104500, 方向 0" または
+    例: "緯度 34.254000, 経度 133.208000, 方向 270"
+         "34.284500, 133.104500, 方向 0"
          "緯度: 34.273000, 経度: 133.215000, 方向: 225"
     見つかった情報をリストで返す。例: [(34.254000, 133.208000, 270)]
     """
@@ -374,7 +359,7 @@ def main():
         
         # スピーカー追加：固定形式の入力を想定
         new_speaker = st.text_input("スピーカー追加", 
-                                    placeholder="例: 緯度 34.254000, 経度 133.208000, 方向 270\nまたは 34.284500, 133.104500, 方向 0")
+                                    placeholder="例: 緯度 34.254000, 経度 133.208000, 方向 270\nまたは 34.284500, 133.104500, 方向 0\nまたは 緯度: 34.273000, 経度: 133.215000, 方向: 225")
         if st.button("スピーカー追加"):
             parsed = parse_speaker_input(new_speaker)
             if parsed:
@@ -383,12 +368,11 @@ def main():
                 st.session_state.heatmap_data = None
                 st.success(f"スピーカーを追加しました: 緯度 {lat}, 経度 {lon}, 方向 {direction}")
             else:
-                st.error("入力形式が正しくありません。形式は『緯度 34.254000, 経度 133.208000, 方向 270』または『34.284500, 133.104500, 方向 0』で入力してください。")
+                st.error("入力形式が正しくありません。形式は『緯度 34.254000, 経度 133.208000, 方向 270』などで入力してください。")
         
         # スピーカー削除・編集機能
         if st.session_state.speakers:
-            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" 
-                       for i, spk in enumerate(st.session_state.speakers)]
+            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" for i, spk in enumerate(st.session_state.speakers)]
             selected_index = st.selectbox("スピーカーを選択", list(range(len(options))),
                                           format_func=lambda i: options[i])
             col_del, col_edit = st.columns(2)
@@ -427,11 +411,11 @@ def main():
                     except Exception as e:
                         st.error(f"編集内容の保存に失敗しました: {e}")
         
-        # スピーカーリセット
+        # スピーカーリセット（Gemini のレスポンスもクリア）
         if st.button("スピーカーリセット"):
             st.session_state.speakers = []
             st.session_state.heatmap_data = None
-            st.session_state.gemini_result = None  # Geminiのレスポンスもクリア
+            st.session_state.gemini_result = None
             st.success("スピーカーをリセットしました")
         
         # パラメータ調整
@@ -481,7 +465,23 @@ def main():
         gemini_query = st.text_area("Gemini に問い合わせる内容", height=150,
                                     placeholder="ここに問い合わせ内容を入力してください")
         if st.button("Gemini API を実行"):
-            full_prompt = generate_gemini_prompt(gemini_query)
+            # 以下のプロンプトは、島や地形情報を踏まえた最適なスピーカー配置案を提案するためのものです。
+            full_prompt = (
+                "あなたは、災害対策のために公共空間にスピーカーを配置する専門家です。以下の条件と地形情報を考慮し、最適なスピーカー配置案を提案してください。\n\n"
+                "【条件】\n"
+                "- スピーカーは、被災地域全体に均一に音声を届ける必要がある。\n"
+                "- スピーカー同士は、お互いの干渉を避けるために、原則として300m以上離れるように配置する。\n"
+                "- 各スピーカーは、設置場所の地形（山、谷、海岸、島、樹林など）や障害物を考慮し、最適な方向に向ける必要がある。\n"
+                "- 島や複雑な地形がある場合は、斜面や海岸線などの特性を反映して、スピーカー配置が実際の音の伝播に与える影響を最小限にする配置を考える。\n\n"
+                "【出力形式】\n"
+                "- 提案する各スピーカーの配置は、必ず以下の形式で出力してください。\n"
+                "  「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z」\n"
+                "  （例：緯度 34.254000, 経度 133.208000, 方向 270）\n"
+                "- 各配置について、その設置理由や考慮した地形の特徴も併せて簡潔に説明してください。\n\n"
+                "【ユーザーの問い合わせ】\n"
+                f"{gemini_query}\n\n"
+                "上記の条件と情報に基づき、最も効果的なスピーカー配置案とその理由を、具体的かつ詳細に提案してください。"
+            )
             result = call_gemini_api(full_prompt)
             st.session_state.gemini_result = result
             st.success("Gemini API の実行が完了しました")
