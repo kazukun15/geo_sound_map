@@ -20,12 +20,19 @@ CUSTOM_CSS = """
 body { font-family: 'Helvetica', sans-serif; }
 h1, h2, h3, h4, h5, h6 { color: #333333; }
 div.stButton > button {
-    background-color: #4CAF50; color: white; border: none;
-    padding: 10px 24px; font-size: 16px; border-radius: 8px; cursor: pointer;
+    background-color: #4CAF50; 
+    color: white; 
+    border: none;
+    padding: 10px 24px; 
+    font-size: 16px; 
+    border-radius: 8px; 
+    cursor: pointer;
+    text-align: left;  /* ボタン内の文字を左揃え */
 }
 div.stButton > button:hover { background-color: #45a049; }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 {
-    font-weight: bold; color: #4CAF50;
+    font-weight: bold; 
+    color: #4CAF50;
 }
 </style>
 """
@@ -105,7 +112,7 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
         direction_deg = float(spk[3]) if len(spk) >= 4 else 0.0
         dlat = grid_lat - lat_s
         dlon = grid_lon - lon_s
-        distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * math.cos(math.radians(lat_s)))**2)
+        distance = np.sqrt((dlat*111320)**2 + (dlon*111320*math.cos(math.radians(lat_s)))**2)
         distance[distance < 1] = 1
         p_db = L0 - 20 * np.log10(distance)
         # 方向依存補正
@@ -150,7 +157,8 @@ def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
 def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
     """
     ColumnLayer用データ生成：
-    音圧を正規化し、高さを 0～300 に、色は弱→青、強→赤（半透明）に設定。
+    音圧を正規化し、高さを 0～500 に（従来0～300から変更）、
+    色は弱→青、強→赤（半透明）に設定。
     """
     sgrid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     if np.all(np.isnan(sgrid)):
@@ -166,7 +174,7 @@ def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
             val = sgrid[i, j]
             if not np.isnan(val):
                 norm = (val - val_min) / (val_max - val_min)
-                elevation = norm * 300.0  # 高さを 0～300 に
+                elevation = norm * 500.0  # 高さを 0～500 に拡大
                 r = int(255 * norm)
                 g = int(255 * (1 - norm))
                 b = 128
@@ -261,7 +269,7 @@ def add_speaker_proposals_from_gemini():
 # ------------------ ScenegraphLayer (3Dスピーカー) ------------------
 def create_speaker_3d_layer(spk_df):
     SCENEGRAPH_URL = "https://raw.githubusercontent.com/visgl/deck.gl-data/master/scenegraph/airplane/scene.gltf"
-    spk_df["z"] = 30
+    spk_df["z"] = 50  # すべてのスピーカーを同一高さ(50)に固定
     return pdk.Layer(
         "ScenegraphLayer",
         data=spk_df,
@@ -312,8 +320,8 @@ def create_column_layer(col_df):
 def animate_all_propagation(speakers, base_layers, view_state, L0):
     """
     全スピーカーからの音圧伝搬アニメーションを同時に表示する。
-    各スピーカーについて、現在の半径に応じた透明度を計算して円を表示し、
-    最終状態（全てのスピーカーからの伝搬円が表示された状態）を維持する。
+    各スピーカーについて、円の半径に応じた透明度 (alpha) を音圧に基づいて計算し表示、
+    最終状態をそのまま維持する。
     """
     container = st.empty()
     num_steps = 20
@@ -340,12 +348,11 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
         deck = pdk.Deck(
             layers=current_layers,
             initial_view_state=view_state,
-            tooltip={"text": "{label}\n方向: {flag}\n音圧: {value}"}
+            tooltip={"text": "{label}\n方向: {flag}\n音圧: {value} dB"}
         )
         container.pydeck_chart(deck)
         time.sleep(0.3)
         final_deck = deck
-    # フェードアウトフェーズ
     for fade in range(10, -1, -1):
         fade_alpha = int(80 * (fade / 10))
         anim_layers = []
@@ -363,7 +370,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
         deck = pdk.Deck(
             layers=current_layers,
             initial_view_state=view_state,
-            tooltip={"text": "{label}\n方向: {flag}\n音圧: {value}"}
+            tooltip={"text": "{label}\n方向: {flag}\n音圧: {value} dB"}
         )
         container.pydeck_chart(deck)
         time.sleep(0.2)
@@ -373,9 +380,6 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
 
 # ------------------ 個別スピーカー伝搬アニメーション用 ------------------
 def animate_individual_propagation(speaker, base_layers, view_state, L0):
-    """
-    選択されたスピーカーのみの音圧伝搬アニメーションを表示する。
-    """
     return animate_all_propagation([speaker], base_layers, view_state, L0)
 
 # ------------------ メインUI ------------------
@@ -406,7 +410,7 @@ def main():
     if "selected_index" not in st.session_state:
         st.session_state.selected_index = None
 
-    # サイドバー
+    # サイドバー操作
     with st.sidebar:
         st.header("操作パネル")
         upfile = st.file_uploader("CSVアップロード", type=["csv"])
@@ -495,7 +499,7 @@ def main():
             st.success("Gemini完了")
             add_speaker_proposals_from_gemini()
         
-        # ボタンを分ける：個別と全体の伝搬アニメーション
+        # 個別と全体の伝搬アニメーションボタンを分ける
         if st.session_state.speakers:
             if st.button("個別スピーカー伝搬アニメーション表示"):
                 st.session_state.animate_individual = True
@@ -511,7 +515,7 @@ def main():
         flag = s[3] if len(s) >= 4 else ""
         spk_list.append([s[0], s[1], s[2], flag])
     spk_df = pd.DataFrame(spk_list, columns=["lat", "lon", "label", "flag"])
-    spk_df["z"] = 30  # 3Dモデル表示用の高さ
+    spk_df["z"] = 50  # すべてのスピーカーの3Dモデル表示用の高さを均一に 50 に固定
     spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x=="new" else [0, 0, 255])
     
     # ------------------ レイヤー作成 ------------------
@@ -534,7 +538,7 @@ def main():
         else:
             st.info("3Dカラムデータが空です。")
     
-    # スピーカーは常に ScenegraphLayer で立体表示
+    # すべてのスピーカーは常に ScenegraphLayer で立体表示
     speaker_3d_layer = create_speaker_3d_layer(spk_df)
     layers.append(speaker_3d_layer)
     
@@ -558,11 +562,10 @@ def main():
     base_deck = pdk.Deck(
         layers=layers,
         initial_view_state=view_state,
-        tooltip={"text": "{label}\n方向: {flag}\n音圧: {value}"}
+        tooltip={"text": "{label}\n方向: {flag}\n音圧: {value} dB"}
     )
     
     # ------------------ アニメーション処理 ------------------
-    # 優先順位：全体アニメーション > 個別アニメーション
     if st.session_state.get("animate_all", False):
         final_deck = animate_all_propagation(st.session_state.speakers, layers.copy(), view_state, st.session_state.L0)
         st.session_state.animate_all = False
