@@ -33,7 +33,7 @@ div.stButton > button:hover { background-color: #45a049; }
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ------------------ API設定 ------------------
-API_KEY = st.secrets["general"]["api_key"]  # secrets.toml の [general] に設定
+API_KEY = st.secrets["general"]["api_key"]
 MODEL_NAME = "gemini-2.0-flash"
 
 # ------------------ 方向文字列 → 度数変換 ------------------
@@ -54,10 +54,7 @@ def parse_direction(dir_str):
 
 # ------------------ CSV 読み込み／書き出し ------------------
 def load_csv(file):
-    """
-    CSVからスピーカー情報を読み込み、[[lat, lon, label, direction_deg], ...] を返す。
-    CSVに"direction"カラムがあればそれを使用し、なければデフォルト0°。
-    """
+    """CSVからスピーカー情報を読み込み、[[lat, lon, label, direction_deg], ...] を返す。"""
     try:
         df = pd.read_csv(file)
         speakers = []
@@ -85,7 +82,7 @@ def load_csv(file):
         return []
 
 def export_csv(data):
-    """スピーカー情報をCSV形式に変換（directionは出力しない）"""
+    """スピーカー情報をCSV形式に変換（方向は出力しない）"""
     rows = []
     for s in data:
         lat, lon, label = s[0], s[1], s[2]
@@ -98,8 +95,8 @@ def export_csv(data):
 # ------------------ 音圧計算（方向対応） ------------------
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
-    各スピーカーからの音圧(dB)を計算。
-    方向情報に基づき、グリッド点への角度差のコサイン補正（最低0.3倍）を掛ける。
+    各スピーカーからの音圧(dB)を計算する。
+    方向情報により、グリッド点への角度差に基づくコサイン補正（最低0.3倍）を掛ける。
     結果は (L0-40)～L0 にクリップされる。
     """
     Nx, Ny = grid_lat.shape
@@ -109,10 +106,9 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
         direction_deg = float(spk[3]) if len(spk) >= 4 else 0.0
         dlat = grid_lat - lat_s
         dlon = grid_lon - lon_s
-        distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * math.cos(math.radians(lat_s)))**2)
+        distance = np.sqrt((dlat*111320)**2 + (dlon*111320*math.cos(math.radians(lat_s)))**2)
         distance[distance < 1] = 1
         p_db = L0 - 20 * np.log10(distance)
-        # 方向依存補正
         bearing = (np.degrees(np.arctan2(dlon, dlat))) % 360
         angle_diff = np.abs(bearing - direction_deg)
         angle_diff = np.minimum(angle_diff, 360 - angle_diff)
@@ -130,7 +126,6 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
 
 # ------------------ グリッド生成（上島町全域） ------------------
 def generate_grid_for_kamijima(resolution=80):
-    # 愛媛県上島町全域: 緯度 34.20〜34.35, 経度 133.15〜133.28
     lat_min, lat_max = 34.20, 34.35
     lon_min, lon_max = 133.15, 133.28
     grid_lat, grid_lon = np.meshgrid(
@@ -153,9 +148,6 @@ def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
     return calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon)
 
 def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
-    """
-    ColumnLayer用データ生成：音圧を正規化し、高さを 0～100 (低め) に、色は弱→青、強→赤（半透明）に設定。
-    """
     sgrid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     if np.all(np.isnan(sgrid)):
         return pd.DataFrame()
@@ -170,8 +162,7 @@ def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
             val = sgrid[i, j]
             if not np.isnan(val):
                 norm = (val - val_min) / (val_max - val_min)
-                # 高さを低めに: 0～100
-                elevation = norm * 100.0
+                elevation = norm * 100.0  # 高さは 0～100 に抑える
                 r = int(255 * norm)
                 g = int(255 * (1 - norm))
                 b = 128
@@ -295,7 +286,7 @@ def create_heatmap_layer(heat_df):
         data=heat_df,
         get_position=["longitude", "latitude"],
         get_weight="weight",
-        radiusPixels=30,   # 少し小さめに
+        radiusPixels=30,
         min_opacity=0.05,
         max_opacity=0.1,
     )
@@ -334,7 +325,7 @@ def animate_propagation(speaker, base_layers, view_state):
     num_steps = 20
     max_radius = 300  # 最大半径 (m)
     for step in range(1, num_steps+1):
-        radius = (step/num_steps) * max_radius
+        radius = (step / num_steps) * max_radius
         circle_geo = create_circle_geojson(speaker[0], speaker[1], radius)
         anim_layer = pdk.Layer(
             "GeoJsonLayer",
@@ -356,10 +347,10 @@ def animate_propagation(speaker, base_layers, view_state):
 # ------------------ メインUI ------------------
 def main():
     st.title("愛媛県上島町 全域＋スピーカー方向＆音圧伝搬アニメーション")
-
+    
     # セッション初期化
     if "map_center" not in st.session_state:
-        st.session_state.map_center = [34.25, 133.20]  # 上島町中心
+        st.session_state.map_center = [34.25, 133.20]
     if "map_zoom" not in st.session_state:
         st.session_state.map_zoom = 11
     if "speakers" not in st.session_state:
@@ -381,7 +372,7 @@ def main():
     if "selected_index" not in st.session_state:
         st.session_state.selected_index = None
 
-    # サイドバー操作
+    # サイドバー
     with st.sidebar:
         st.header("操作パネル")
         upfile = st.file_uploader("CSVアップロード", type=["csv"])
@@ -437,7 +428,7 @@ def main():
                 new_lat = st.text_input("緯度", value=str(spk[0]))
                 new_lon = st.text_input("経度", value=str(spk[1]))
                 new_lbl = st.text_input("ラベル", value=spk[2])
-                new_dir = st.text_input("方向", value=str(spk[3] if len(spk) >= 4 else "0"))
+                new_dir = st.text_input("方向", value=str(spk[3] if len(spk)>=4 else "0"))
                 if st.form_submit_button("編集保存"):
                     try:
                         latv = float(new_lat)
@@ -482,9 +473,10 @@ def main():
         flag = s[3] if len(s) >= 4 else ""
         spk_list.append([s[0], s[1], s[2], flag])
     spk_df = pd.DataFrame(spk_list, columns=["lat", "lon", "label", "flag"])
-    spk_df["z"] = 30  # 3Dモデル表示用
-    spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x=="new" else [0, 0, 255])
+    spk_df["z"] = 30  # 3Dモデル表示用の高さ
+    spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x == "new" else [0, 0, 255])
     
+    # ------------------ レイヤー作成 ------------------
     layers = []
     if disp_mode == "HeatMap":
         if st.session_state.heatmap_data is None:
@@ -508,11 +500,11 @@ def main():
         scatter_layer = create_scatter_layer(spk_df)
         layers.append(scatter_layer)
     
-    # スピーカー3Dモデル (ScenegraphLayer)を追加（カラムより上に表示）
+    # すべてのスピーカーを 3Dモデルで表示する ScenegraphLayer を追加（ScatterplotLayer の代わりとして）
     speaker_3d_layer = create_speaker_3d_layer(spk_df)
     layers.append(speaker_3d_layer)
     
-    # ------------------ 全体音圧範囲表示 ------------------
+    # ------------------ 全体音圧範囲の表示 ------------------
     sgrid = compute_sound_grid(st.session_state.speakers, st.session_state.L0, st.session_state.r_max, grid_lat, grid_lon)
     try:
         dbmin = np.nanmin(sgrid)
@@ -521,7 +513,7 @@ def main():
     except:
         st.write("音圧範囲計算失敗")
     
-    # ------------------ 基本ビュー設定 ------------------
+    # ------------------ ビュー設定 ------------------
     view_state = pdk.ViewState(
         latitude=34.25,
         longitude=133.20,
@@ -541,7 +533,7 @@ def main():
         base_layers = layers.copy()
         animate_propagation(selected_spk, base_layers, view_state)
         st.session_state.animate = False
-    
+
     st.pydeck_chart(base_deck)
     
     # CSVダウンロード
