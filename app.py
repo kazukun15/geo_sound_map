@@ -15,7 +15,6 @@ import pydeck as pdk
 # ------------------ 初期設定 ------------------
 st.set_page_config(page_title="愛媛県上島町 全域＋スピーカー伝搬アニメーション", layout="wide")
 
-# CSS でボタンの文字を左揃えに、全体のフォントや色を設定
 CUSTOM_CSS = """
 <style>
 body { font-family: 'Helvetica', sans-serif; }
@@ -285,7 +284,7 @@ def add_speaker_proposals_from_gemini():
     else:
         st.info("Gemini回答にスピーカー情報が見つかりません。")
 
-# ------------------ ScenegraphLayer (3Dスピーカー) ------------------
+# ------------------ ScenegraphLayer (初期スピーカーの3Dモデル) ------------------
 def create_speaker_3d_layer(spk_df):
     SCENEGRAPH_URL = "https://raw.githubusercontent.com/visgl/deck.gl-data/master/scenegraph/airplane/scene.gltf"
     spk_df["z"] = 50  # 初期スピーカーは3Dモデルで表示（高さ50に固定）
@@ -318,7 +317,7 @@ def create_heatmap_layer(heat_df):
         data=heat_df,
         get_position=["longitude", "latitude"],
         get_weight="weight",
-        radiusPixels=30,
+        radiusPixels=15,  # ズームイン時にも見やすいように調整
         min_opacity=0.05,
         max_opacity=0.1,
     )
@@ -340,8 +339,7 @@ def create_column_layer(col_df):
 def animate_all_propagation(speakers, base_layers, view_state, L0):
     """
     全スピーカーからの音圧伝搬アニメーションを同時に表示する。
-    各スピーカーの円の透明度は、音圧に基づいて計算し表示し、
-    アニメーション終了後はその最終状態を維持する。
+    各スピーカーの円の透明度は音圧に基づいて計算し、最終状態をそのまま維持する。
     """
     container = st.empty()
     num_steps = 20
@@ -356,11 +354,12 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
             p_db = L0 - 20 * math.log10(effective_radius)
             alpha = int(255 * (p_db - (L0 - 40)) / 40)
             alpha = max(0, min(alpha, 255))
+            # 青い線に変更：線の色と塗りの色を青に設定
             anim_layer = pdk.Layer(
                 "GeoJsonLayer",
                 data=circle_geo,
-                get_fill_color=[255, 0, 0, alpha],
-                get_line_color=[255, 0, 0],
+                get_fill_color=[0, 0, 255, alpha],
+                get_line_color=[0, 0, 255],
                 line_width_min_pixels=2,
             )
             anim_layers.append(anim_layer)
@@ -371,9 +370,8 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
             tooltip={"text": "{label}\n方向: {direction} d\n音圧: {value} dB"}
         )
         container.pydeck_chart(deck)
-        time.sleep(0.25)  # 動作を滑らかにするため短めに設定
+        time.sleep(0.25)
         final_deck = deck
-    # フェードアウトフェーズ：徐々に透明度を下げる
     for fade in range(10, -1, -1):
         fade_alpha = int(80 * (fade / 10))
         anim_layers = []
@@ -382,8 +380,8 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
             anim_layer = pdk.Layer(
                 "GeoJsonLayer",
                 data=circle_geo,
-                get_fill_color=[255, 0, 0, fade_alpha],
-                get_line_color=[255, 0, 0],
+                get_fill_color=[0, 0, 255, fade_alpha],
+                get_line_color=[0, 0, 255],
                 line_width_min_pixels=2,
             )
             anim_layers.append(anim_layer)
@@ -396,7 +394,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
         container.pydeck_chart(deck)
         time.sleep(0.15)
         final_deck = deck
-    # 最終状態を維持（container は空にせず最終デッキを返す）
+    container.empty()
     return final_deck
 
 # ------------------ 個別スピーカー伝搬アニメーション用 ------------------
@@ -434,7 +432,6 @@ def main():
     # サイドバー操作
     with st.sidebar:
         st.header("操作パネル")
-        # CSVアップロード
         upfile = st.file_uploader("CSVアップロード", type=["csv"])
         if upfile and st.button("CSVからスピーカー登録"):
             new_spk = load_csv(upfile)
@@ -532,7 +529,7 @@ def main():
     grid_lat, grid_lon = generate_grid_for_kamijima(resolution=80)
     
     # ------------------ スピーカーのデータ分割 ------------------
-    # 最初の1件を初期スピーカーとして3Dモデル表示、以降は追加スピーカーとして小さい散布図で表示
+    # 最初の1件は初期スピーカーとして3Dモデル表示、以降は追加スピーカーは小さい青丸で表示
     default_spk_list = st.session_state.speakers[0:1] if len(st.session_state.speakers) >= 1 else []
     added_spk_list = st.session_state.speakers[1:] if len(st.session_state.speakers) > 1 else []
     default_spk_df = pd.DataFrame(default_spk_list, columns=["lat", "lon", "label", "direction"]) if default_spk_list else pd.DataFrame(columns=["lat", "lon", "label", "direction"])
