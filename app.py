@@ -1,8 +1,6 @@
 import os
 import streamlit as st
-import folium
-from folium.plugins import HeatMap
-from streamlit_folium import st_folium
+import pydeck as pdk
 import numpy as np
 import pandas as pd
 import math
@@ -12,39 +10,19 @@ import re
 import time
 import random
 from concurrent.futures import ThreadPoolExecutor
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # ※等高線用の処理などで使用する場合もあるが、ここではHeatmapを利用
 
 # st.set_page_config() は必ず最初に呼び出す
 st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
 
-# ---------- Custom CSS for UI styling (UI改善) ----------
+# ---------- Custom CSS for UI styling ----------
 custom_css = """
 <style>
 body { font-family: 'Helvetica', sans-serif; }
 h1, h2, h3, h4, h5, h6 { color: #333333; }
-div.stButton > button {
-    background-color: #4CAF50; 
-    color: white; 
-    border: none;
-    padding: 10px 24px; 
-    font-size: 16px; 
-    border-radius: 8px; 
-    cursor: pointer;
-}
-div.stButton > button:hover { background-color: #45a049; }
-div.stTextInput>div>input { font-size: 16px; padding: 8px; }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 {
     font-weight: bold; color: #4CAF50;
 }
-.chat-bubble {
-    background-color: #e8f5e9;
-    border-radius: 10px;
-    padding: 8px;
-    margin: 4px 0;
-    max-width: 80%;
-    word-wrap: break-word;
-}
-.chat-header { font-weight: bold; margin-bottom: 4px; color: #4CAF50; }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -61,10 +39,10 @@ MODEL_NAME = "gemini-2.0-flash"
 # ----------------------------------------------------------------
 def load_csv(file):
     """
-    CSVファイルを読み込み、スピーカーの位置情報を抽出する関数。
+    CSVファイルを読み込み、スピーカーの位置情報を抽出する。
     必須カラム: "latitude", "longitude"
-    任意カラム: "label"（"施設名" や "名称" も利用可）
-    戻り値は [[lat, lon, label], ...] の形式
+    任意カラム: "label"（"施設名" や "名称" も利用可能）
+    戻り値は [[lat, lon, label], ...] の形式。
     """
     try:
         df = pd.read_csv(file)
@@ -97,6 +75,7 @@ def export_csv(data):
     """
     スピーカー情報（[[lat, lon, label], ...]）を CSV 形式に変換する関数。
     CSV の列は ["latitude", "longitude", "label"] とする。
+    ※ 新規スピーカーの "new" フラグは出力しません。
     """
     rows = []
     for entry in data:
@@ -143,72 +122,48 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
 def calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
     """
     ヒートマップ表示用のデータリストを作成する関数。
+    戻り値は DataFrame（columns: latitude, longitude, value）
     """
     sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     Nx, Ny = grid_lat.shape
-    heat_data = []
+    data = []
     for i in range(Nx):
         for j in range(Ny):
             val = sound_grid[i, j]
             if not np.isnan(val):
-                heat_data.append([grid_lat[i, j], grid_lon[i, j], val])
-    return heat_data
+                data.append({
+                    "latitude": grid_lat[i, j],
+                    "longitude": grid_lon[i, j],
+                    "value": val
+                })
+    return pd.DataFrame(data)
 
+# キャッシュ付きヒートマップ
 @st.cache_data(show_spinner=False)
 def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
-    """ヒートマップデータ計算をキャッシュして再計算を回避する。"""
     return calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon)
 
 # ----------------------------------------------------------------
-# 等高線（コンターライン）表示用
+# Pydeck 用にスピーカー DataFrame を作成する関数
 # ----------------------------------------------------------------
-def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=None):
+def get_speaker_df(speakers):
     """
-    コンターライン（等高線）を Folium 上に表示する関数。
-    1. compute_sound_grid で音圧を計算
-    2. matplotlib の contour で等高線を抽出
-    3. Folium の PolyLine として地図上に追加
+    内部リスト (speakers) を DataFrame に変換する。
+    新規スピーカー（4要素目が "new"）は new フラグ True、それ以外は False とする。
     """
-    if levels is None:
-        raw_levels = [L0 - 40, L0 - 30, L0 - 20, L0 - 10]
-        levels = sorted(raw_levels)
-    sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
-    
-    # sound_grid の有効な値をチェック
-    try:
-        min_val = np.nanmin(sound_grid)
-        max_val = np.nanmax(sound_grid)
-    except Exception as e:
-        st.warning("sound_grid の値が取得できません。")
-        return
-    if np.isnan(min_val) or np.isnan(max_val) or min_val == max_val:
-        st.warning("sound_grid の値が無効なため、等高線を生成できません。")
-        return
-    
-    fig, ax = plt.subplots()
-    try:
-        c = ax.contour(grid_lon, grid_lat, sound_grid, levels=levels)
-    except Exception as e:
-        st.error(f"Contour generation error: {e}")
-        plt.close(fig)
-        return
-    
-    # 等高線が見つからない場合のチェック
-    if not c.allsegs or all(len(segs) == 0 for segs in c.allsegs):
-        st.warning("有効な等高線が生成されませんでした。")
-        plt.close(fig)
-        return
-    
-    colors = ["red", "blue", "green", "purple", "orange"]
-    for level_idx, segs in enumerate(c.allsegs):
-        color = colors[level_idx % len(colors)]
-        for seg in segs:
-            if len(seg) == 0:
-                continue
-            coords = [[p[1], p[0]] for p in seg]  # Foliumは [lat, lon] 順
-            if coords:
-                folium.PolyLine(coords, color=color, weight=2).add_to(m)
-    plt.close(fig)
+    data = []
+    for spk in speakers:
+        if len(spk) >= 4 and spk[3] == "new":
+            new_flag = True
+        else:
+            new_flag = False
+        data.append({
+            "latitude": spk[0],
+            "longitude": spk[1],
+            "label": spk[2],
+            "new": new_flag
+        })
+    return pd.DataFrame(data)
 
 # ----------------------------------------------------------------
 # Gemini API 関連
@@ -326,14 +281,31 @@ executor = ThreadPoolExecutor(max_workers=2)
 
 @st.cache_data(show_spinner=False)
 def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
-    """ヒートマップデータ計算をキャッシュして再計算を回避する。"""
     return calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon)
 
 # ----------------------------------------------------------------
-# Main Application (UI)
+# Pydeck 用にスピーカー DataFrame を作成
+# ----------------------------------------------------------------
+def get_speaker_df(speakers):
+    data = []
+    for spk in speakers:
+        if len(spk) >= 4 and spk[3] == "new":
+            new_flag = True
+        else:
+            new_flag = False
+        data.append({
+            "latitude": spk[0],
+            "longitude": spk[1],
+            "label": spk[2],
+            "new": new_flag
+        })
+    return pd.DataFrame(data)
+
+# ----------------------------------------------------------------
+# Main Application (UI) – Pydeck 表示版
 # ----------------------------------------------------------------
 def main():
-    st.title("防災スピーカー音圧可視化マップ（ヒートマップ or 等高線 + Gemini API）")
+    st.title("防災スピーカー音圧可視化マップ (Pydeck版)")
     
     # セッション初期化
     if "map_center" not in st.session_state:
@@ -355,11 +327,11 @@ def main():
         st.session_state.gemini_result = None
     if "edit_index" not in st.session_state:
         st.session_state.edit_index = None
-    
+
+    # サイドバー：操作パネル
     with st.sidebar:
         st.header("操作パネル")
         
-        # CSVファイルアップロード
         uploaded_file = st.file_uploader("CSVファイルをアップロード", type=["csv"])
         if uploaded_file:
             if st.button("CSVからスピーカー登録"):
@@ -371,7 +343,6 @@ def main():
                 else:
                     st.error("CSVに正しいデータが見つかりませんでした。")
         
-        # スピーカー手動追加
         new_speaker = st.text_input("スピーカー追加 (latitude,longitude,label)", 
                                     placeholder="例: 34.2579,133.2072,役場")
         if st.button("スピーカー追加"):
@@ -389,7 +360,6 @@ def main():
                 except Exception as e:
                     st.error(f"スピーカー追加エラー: {e}")
         
-        # スピーカー削除・編集
         if st.session_state.speakers:
             options = [f"{i}: ({s[0]:.6f}, {s[1]:.6f}) - ラベル: {s[2]}" for i, s in enumerate(st.session_state.speakers)]
             selected = st.selectbox("スピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
@@ -434,10 +404,8 @@ def main():
         st.session_state.L0 = st.slider("初期音圧レベル (dB)", 50, 100, st.session_state.L0)
         st.session_state.r_max = st.slider("最大伝播距離 (m)", 100, 2000, st.session_state.r_max)
         
-        # 表示モード選択
-        display_mode = st.radio("表示モードを選択", ["HeatMap", "Contour Lines"])
+        display_mode = st.radio("表示モードを選択", ["HeatMap", "Markers Only"])
         
-        # Gemini API 関連
         st.subheader("Gemini API 呼び出し")
         gemini_query = st.text_input("Gemini に問い合わせる内容")
         if st.button("Gemini API を実行"):
@@ -445,68 +413,88 @@ def main():
             result = call_gemini_api(full_prompt)
             st.session_state.gemini_result = result
             st.success("Gemini API 実行完了")
-            # 自動的にGeminiの回答からスピーカー提案を抽出して追加
+            # 自動的にGemini回答から新規スピーカー追加
             add_speaker_proposals_from_gemini()
     
-    # メインパネル：地図とヒートマップ or 等高線の表示
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        lat_min = st.session_state.map_center[0] - 0.01
-        lat_max = st.session_state.map_center[0] + 0.01
-        lon_min = st.session_state.map_center[1] - 0.01
-        lon_max = st.session_state.map_center[1] + 0.01
-        grid_lat, grid_lon = np.meshgrid(
-            np.linspace(lat_min, lat_max, 100),
-            np.linspace(lon_min, lon_max, 100)
+    # Pydeck 表示用データ作成
+    speaker_df = get_speaker_df(st.session_state.speakers)
+    # マーカーの色は、new=True の場合は赤、Falseの場合は青
+    if not speaker_df.empty:
+        speaker_df["color"] = speaker_df["new"].apply(lambda x: [255, 0, 0, 200] if x else [0, 0, 255, 200])
+    
+    # ヒートマップデータの作成（HeatMap表示モードの場合）
+    # グリッドを st.session_state.map_center ±0.01 度で作成
+    lat_min = st.session_state.map_center[0] - 0.01
+    lat_max = st.session_state.map_center[0] + 0.01
+    lon_min = st.session_state.map_center[1] - 0.01
+    lon_max = st.session_state.map_center[1] + 0.01
+    grid_lat, grid_lon = np.meshgrid(
+        np.linspace(lat_min, lat_max, 100),
+        np.linspace(lon_min, lon_max, 100)
+    )
+    heat_df = None
+    if display_mode == "HeatMap":
+        if st.session_state.heatmap_data is None:
+            st.session_state.heatmap_data = cached_calculate_heatmap(
+                st.session_state.speakers,
+                st.session_state.L0,
+                st.session_state.r_max,
+                grid_lat,
+                grid_lon
+            )
+        heat_df = st.session_state.heatmap_data
+
+    # Pydeck レイヤー作成
+    layers = []
+    # スピーカー表示用：ScatterplotLayer
+    scatter_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=speaker_df,
+        get_position=["longitude", "latitude"],
+        get_radius=200,
+        get_fill_color="color",
+        pickable=True,
+        auto_highlight=True,
+    )
+    layers.append(scatter_layer)
+    
+    # ヒートマップ表示用：HeatmapLayer（選択時のみ）
+    if display_mode == "HeatMap" and heat_df is not None and not heat_df.empty:
+        heat_layer = pdk.Layer(
+            "HeatmapLayer",
+            data=heat_df,
+            get_position=["longitude", "latitude"],
+            get_weight="value",
+            radiusPixels=50,
+            aggregation=pdk.types.String("SUM"),
         )
-        
-        if display_mode == "HeatMap":
-            if st.session_state.heatmap_data is None:
-                st.session_state.heatmap_data = cached_calculate_heatmap(
-                    st.session_state.speakers,
-                    st.session_state.L0,
-                    st.session_state.r_max,
-                    grid_lat,
-                    grid_lon
-                )
-        else:
-            st.session_state.heatmap_data = None
-        
-        m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
-        
-        # スピーカーのマーカー表示（新規スピーカーは赤、既存は青）
-        for spk in st.session_state.speakers:
-            # "new" フラグが付いている場合は赤色アイコン
-            if len(spk) >= 4 and spk[3] == "new":
-                icon = folium.Icon(color="red", icon="info-sign")
-            else:
-                icon = folium.Icon(color="blue", icon="info-sign")
-            lat, lon, label = spk[0], spk[1], spk[2]
-            popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})"
-            if label:
-                popup_text += f"<br><b>ラベル</b>: {label}"
-            folium.Marker(location=[lat, lon], popup=folium.Popup(popup_text, max_width=300), icon=icon).add_to(m)
-        
-        # ヒートマップ or 等高線描画
-        if display_mode == "HeatMap":
-            if st.session_state.heatmap_data and len(st.session_state.heatmap_data) > 0:
-                HeatMap(st.session_state.heatmap_data, min_opacity=0.3, max_opacity=0.8,
-                        radius=15, blur=20).add_to(m)
-            else:
-                st.info("ヒートマップデータが空のため、HeatMap を表示しません。")
-        else:
-            add_contour_lines_to_map(m, grid_lat, grid_lon, st.session_state.speakers,
-                                     st.session_state.L0, st.session_state.r_max, levels=None)
-        
-        st_folium(m, width=700, height=500)
-    with col2:
-        csv_data = export_csv(st.session_state.speakers)
-        st.download_button("スピーカーCSVダウンロード", csv_data, "speakers.csv", "text/csv")
+        layers.append(heat_layer)
+    
+    # 初期のビュー状態
+    view_state = pdk.ViewState(
+        latitude=st.session_state.map_center[0],
+        longitude=st.session_state.map_center[1],
+        zoom=st.session_state.map_zoom,
+        pitch=0,
+    )
+    
+    deck = pdk.Deck(
+        initial_view_state=view_state,
+        layers=layers,
+        tooltip={"text": "{label}"},
+    )
+    st.pydeck_chart(deck)
+    
+    # CSVダウンロード用
+    csv_data = export_csv(st.session_state.speakers)
+    st.download_button("スピーカーCSVダウンロード", csv_data, "speakers.csv", "text/csv")
     
     with st.expander("デバッグ・テスト情報"):
         st.write("スピーカー情報:", st.session_state.speakers)
-        count = len(st.session_state.heatmap_data) if st.session_state.heatmap_data else 0
-        st.write("ヒートマップデータの件数:", count)
+        if heat_df is not None:
+            st.write("ヒートマップデータ件数:", len(heat_df))
+        else:
+            st.write("ヒートマップデータなし")
     
     st.markdown("---")
     st.subheader("Gemini API の回答（テキスト表示）")
