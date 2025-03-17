@@ -220,12 +220,12 @@ def create_heatmap_layer(heat_df):
         radiusPixels=dynamic_radius_pixels(st.session_state.map_zoom),
         min_opacity=0.1,   # 透明度の下限（より透明に）
         max_opacity=0.3,   # 透明度の上限（背景が見やすい）
-        colorRange=[
-            [0, 0, 255, 150],     # 青（低音圧）
+         colorRange=[
+            [0, 0, 255, 150],     # 青（低音圧、半透明）
             [0, 255, 255, 150],   # シアン
-            [0, 255, 0, 150,     # 緑
+            [0, 255, 0, 150],     # 緑
             [255, 255, 0, 150],   # 黄色
-            [255, 0, 0, 150]      # 赤（高音圧）
+            [255, 0, 0, 150]      # 赤（高音圧、半透明）
         ]
     )
 
