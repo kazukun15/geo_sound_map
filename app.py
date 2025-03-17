@@ -12,8 +12,6 @@ import re
 import time
 import random
 from concurrent.futures import ThreadPoolExecutor
-
-import matplotlib
 import matplotlib.pyplot as plt
 
 # st.set_page_config() は必ず最初に呼び出す
@@ -120,6 +118,10 @@ def export_csv(data):
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
     各スピーカーの音圧を計算し、全スピーカー分のパワーを合算して dB 値に変換する。
+    speakers: [[lat, lon, label], ...]
+    L0: 初期音圧レベル (dB)
+    r_max: 最大伝播距離 (m)
+    grid_lat, grid_lon: 2D配列の各グリッド点の緯度・経度
     """
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
@@ -154,47 +156,44 @@ def calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
 
 @st.cache_data(show_spinner=False)
 def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
-    """ヒートマップデータ計算をキャッシュして再計算を回避する。"""
+    """ヒートマップデータ計算をキャッシュして、再計算を回避する。"""
     return calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon)
 
 # ----------------------------------------------------------------
-# 等高線（コンターライン）表示用の関数
+# 等高線（コンターライン）表示用
 # ----------------------------------------------------------------
 def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=None):
     """
-    コンターライン（等高線）を Folium 上に表示する。
+    コンターライン（等高線）を Folium 上に表示する関数。
     1. compute_sound_grid で音圧を計算
-    2. matplotlib の contour で線分を取得
-    3. Folium PolyLine として追加
+    2. matplotlib の contour で等高線を抽出
+    3. Folium の PolyLine として地図上に追加
     """
     if levels is None:
-        # 例: L0=80dBの場合 [40, 50, 60, 70] のように昇順に
         raw_levels = [L0 - 40, L0 - 30, L0 - 20, L0 - 10]
-        # ソートして昇順にする
-        levels = sorted(raw_levels)
-    
+        levels = sorted(raw_levels)  # 昇順にする
     sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
-    
     fig, ax = plt.subplots()
-    # grid_lon, grid_lat, sound_grid の順で contour する
-    # levels は必ず昇順にする
     c = ax.contour(grid_lon, grid_lat, sound_grid, levels=levels)
-    
     colors = ["red", "blue", "green", "purple", "orange"]
-    for level_idx, level_segs in enumerate(c.allsegs):
+    for level_idx, segs in enumerate(c.allsegs):
         color = colors[level_idx % len(colors)]
-        for seg in level_segs:
-            # seg: Nx2 -> [ [lon1, lat1], [lon2, lat2], ... ]
-            # Folium では [lat, lon] の順序が必要
-            coords = [[p[1], p[0]] for p in seg]
+        for seg in segs:
+            coords = [[p[1], p[0]] for p in seg]  # Foliumは [lat, lon] 順
             folium.PolyLine(coords, color=color, weight=2).add_to(m)
-    
-    plt.close(fig)  # 不要な図を閉じる
+    plt.close(fig)
 
 # ----------------------------------------------------------------
 # Gemini API 関連
 # ----------------------------------------------------------------
 def generate_gemini_prompt(user_query):
+    """
+    ユーザーの問い合わせと現在のスピーカー配置、音圧分布情報を元に改善案を提案するプロンプトを生成する。
+    条件：
+      - 海など設置困難な場所は除外
+      - スピーカー同士は300m以上離れていること
+      - 座標表記は「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」で統一
+    """
     speakers = st.session_state.speakers if "speakers" in st.session_state else []
     if speakers:
         speaker_info = "配置されているスピーカー:\n" + "\n".join(
@@ -245,7 +244,7 @@ def extract_speaker_proposals(response_text):
     """
     Gemini のレスポンステキストからスピーカー提案を抽出する。
     例: "## スピーカー増設提案\n緯度 34.254000, 経度 133.208000, 方向 270, ラベル 役場"
-    戻り値: [[lat, lon, label], ...]
+    戻り値は [[lat, lon, label], ...] の形式。
     """
     pattern = r"緯度\s*([-\d]+\.\d+)\s*,\s*経度\s*([-\d]+\.\d+)(?:\s*,\s*(?:方向\s*[^\d]*([\d\.]+))?)?(?:\s*,\s*(?:ラベル\s*([^\n]+))?)?"
     proposals = re.findall(pattern, response_text)
@@ -281,7 +280,17 @@ def add_speaker_proposals_from_gemini():
         st.info("Gemini の提案からスピーカー情報の抽出に失敗しました。")
 
 # ----------------------------------------------------------------
-# メインアプリ
+# ThreadPoolExecutor（非同期処理）
+# ----------------------------------------------------------------
+executor = ThreadPoolExecutor(max_workers=2)
+
+@st.cache_data(show_spinner=False)
+def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
+    """ヒートマップデータ計算をキャッシュして再計算を回避する。"""
+    return calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon)
+
+# ----------------------------------------------------------------
+# Main Application (UI)
 # ----------------------------------------------------------------
 def main():
     st.title("防災スピーカー音圧可視化マップ（ヒートマップ or 等高線 + Gemini API）")
@@ -310,7 +319,7 @@ def main():
     with st.sidebar:
         st.header("操作パネル")
         
-        # CSVファイルアップロード
+        # CSVファイルアップロードと「CSVからスピーカー登録」ボタン
         uploaded_file = st.file_uploader("CSVファイルをアップロード", type=["csv"])
         if uploaded_file:
             if st.button("CSVからスピーカー登録"):
@@ -342,7 +351,7 @@ def main():
         
         # スピーカー削除・編集
         if st.session_state.speakers:
-            options = [f"{i}: ({s[0]:.6f}, {s[1]:.6f}) - {s[2]}" for i, s in enumerate(st.session_state.speakers)]
+            options = [f"{i}: ({s[0]:.6f}, {s[1]:.6f}) - ラベル: {s[2]}" for i, s in enumerate(st.session_state.speakers)]
             selected = st.selectbox("スピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
             col_del, col_edit = st.columns(2)
             with col_del:
@@ -359,7 +368,6 @@ def main():
         else:
             st.info("スピーカーがありません。")
         
-        # 編集フォーム
         if st.session_state.get("edit_index") is not None:
             with st.form("edit_form"):
                 spk = st.session_state.speakers[st.session_state.edit_index]
@@ -387,10 +395,10 @@ def main():
         st.session_state.L0 = st.slider("初期音圧レベル (dB)", 50, 100, st.session_state.L0)
         st.session_state.r_max = st.slider("最大伝播距離 (m)", 100, 2000, st.session_state.r_max)
         
-        # ヒートマップ or 等高線表示を選択
+        # 表示モード選択
         display_mode = st.radio("表示モードを選択", ["HeatMap", "Contour Lines"])
         
-        # Gemini API
+        # Gemini API 関連
         st.subheader("Gemini API 呼び出し")
         gemini_query = st.text_input("Gemini に問い合わせる内容")
         if st.button("Gemini API を実行"):
@@ -399,7 +407,6 @@ def main():
             st.session_state.gemini_result = result
             st.success("Gemini API 実行完了")
         
-        # Gemini 提案スピーカー追加
         if st.session_state.get("gemini_result"):
             if st.button("Gemini 提案をスピーカーに追加"):
                 add_speaker_proposals_from_gemini()
@@ -426,12 +433,11 @@ def main():
                     grid_lon
                 )
         else:
-            # 等高線表示の場合、毎回再計算
-            st.session_state.heatmap_data = None
+            st.session_state.heatmap_data = None  # コンターラインの場合は毎回再計算
         
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
         
-        # スピーカーをマーカーで表示
+        # スピーカーのマーカー表示
         for spk in st.session_state.speakers:
             lat, lon, label = spk
             popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})"
@@ -439,30 +445,25 @@ def main():
                 popup_text += f"<br><b>ラベル</b>: {label}"
             folium.Marker(location=[lat, lon], popup=folium.Popup(popup_text, max_width=300)).add_to(m)
         
-        # ヒートマップ or コンターラインを描画
+        # ヒートマップ or コンターライン描画
         if display_mode == "HeatMap":
-            if st.session_state.heatmap_data:
+            if st.session_state.heatmap_data and len(st.session_state.heatmap_data) > 0:
                 HeatMap(st.session_state.heatmap_data, min_opacity=0.3, max_opacity=0.8,
                         radius=15, blur=20).add_to(m)
+            else:
+                st.info("ヒートマップデータが空のため、HeatMap を表示しません。")
         else:
-            # コンターライン表示
             add_contour_lines_to_map(m, grid_lat, grid_lon, st.session_state.speakers,
-                                     st.session_state.L0, st.session_state.r_max,
-                                     levels=None)
+                                     st.session_state.L0, st.session_state.r_max, levels=None)
         
         st_folium(m, width=700, height=500)
-    
     with col2:
-        # CSVダウンロード
         csv_data = export_csv(st.session_state.speakers)
         st.download_button("スピーカーCSVダウンロード", csv_data, "speakers.csv", "text/csv")
     
     with st.expander("デバッグ・テスト情報"):
         st.write("スピーカー情報:", st.session_state.speakers)
-        if st.session_state.heatmap_data:
-            count = len(st.session_state.heatmap_data)
-        else:
-            count = 0
+        count = len(st.session_state.heatmap_data) if st.session_state.heatmap_data else 0
         st.write("ヒートマップデータの件数:", count)
     
     st.markdown("---")
