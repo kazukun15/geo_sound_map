@@ -247,4 +247,252 @@ def generate_gemini_prompt(user_query):
     prompt = (
         f"{speaker_info}\n"
         f"現在の音圧レベルの範囲: {sound_range}\n"
-        "海など設置困難な場所は除外し、スピーカー同士は300m以上離れてい
+        "海など設置困難な場所は除外し、スピーカー同士は300m以上離れている場所を考慮してください。\n"
+        f"ユーザーの問い合わせ: {user_query}\n"
+        "上記情報に基づき、改善案を具体的かつ詳細に提案してください。\n"
+        "【座標表記形式】 緯度 xxx.xxxxxx, 経度 yyy.yyyyyy で統一してください。"
+    )
+    return prompt
+
+def call_gemini_api(query):
+    """Gemini API にクエリを送信する関数。"""
+    headers = {"Content-Type": "application/json"}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
+    payload = {"contents": [{"parts": [{"text": query}]}]}
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        rjson = response.json()
+        candidates = rjson.get("candidates", [])
+        if not candidates:
+            st.error("Gemini API エラー: candidatesが空")
+            return "回答が得られませんでした。"
+        candidate0 = candidates[0]
+        content_val = candidate0.get("content", "")
+        if isinstance(content_val, dict):
+            parts = content_val.get("parts", [])
+            content_str = " ".join([p.get("text", "") for p in parts])
+        else:
+            content_str = str(content_val)
+        return content_str.strip()
+    except Exception as e:
+        st.error(f"Gemini API呼び出しエラー: {e}")
+        return f"エラー: {e}"
+
+# ----------------------------------------------------------------
+# ThreadPoolExecutor（非同期処理）
+# ----------------------------------------------------------------
+executor = ThreadPoolExecutor(max_workers=2)
+
+@st.cache_data(show_spinner=False)
+def cached_get_search_info(query: str) -> str:
+    # サンプル実装（実際のAPIエンドポイントやキーに合わせて修正）
+    url = "https://api.example.com/search"
+    headers = {"Authorization": f"Bearer {st.secrets['search']['api_key']}", "Content-Type": "application/json"}
+    payload = {"query": query, "max_results": 1}
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("answer", "")
+        else:
+            return ""
+    except Exception as e:
+        return ""
+
+def async_get_search_info(query: str) -> str:
+    with st.spinner("最新情報を検索中…"):
+        future = executor.submit(cached_get_search_info, query)
+        return future.result()
+
+# -----------------------------------------------------------------------------
+# Main Application (UI) – メインパネル・UI改善
+# -----------------------------------------------------------------------------
+def main():
+    st.title("防災スピーカー音圧可視化マップ")
+    
+    # セッション初期化
+    if "map_center" not in st.session_state:
+        st.session_state.map_center = [34.25741795269067, 133.20450105700033]
+    if "map_zoom" not in st.session_state:
+        st.session_state.map_zoom = 14
+    if "speakers" not in st.session_state:
+        st.session_state.speakers = [[34.25741795269067, 133.20450105700033, [0.0, 90.0]]]
+    if "heatmap_data" not in st.session_state:
+        st.session_state.heatmap_data = None
+    if "L0" not in st.session_state:
+        st.session_state.L0 = 80
+    if "r_max" not in st.session_state:
+        st.session_state.r_max = 500
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "gemini_result" not in st.session_state:
+        st.session_state.gemini_result = None
+    if "edit_index" not in st.session_state:
+        st.session_state.edit_index = None
+    
+    with st.sidebar:
+        st.header("操作パネル")
+        
+        # CSVファイルアップロード → CSVからスピーカー登録ボタン
+        uploaded_file = st.file_uploader("CSVファイルをアップロード", type=["csv"])
+        if uploaded_file:
+            if st.button("CSVからスピーカー登録"):
+                speakers, _ = load_csv(uploaded_file)
+                if speakers:
+                    st.session_state.speakers.extend(speakers)
+                    st.success("CSVからスピーカー情報を登録しました。")
+                else:
+                    st.error("CSVに正しいデータが見つかりませんでした。")
+                st.session_state.heatmap_data = None
+        
+        # スピーカー手動追加（入力チェックあり）
+        new_speaker = st.text_input("スピーカー追加 (緯度,経度,方向1,方向2,...)",
+                                    placeholder="例: 34.2579,133.2072,N,E")
+        if st.button("スピーカー追加"):
+            parts = new_speaker.split(",")
+            if len(parts) < 3:
+                st.error("入力形式が正しくありません。少なくとも緯度, 経度, 方向1が必要です。")
+            else:
+                try:
+                    lat, lon = float(parts[0]), float(parts[1])
+                    directions = [parse_direction(x) for x in parts[2:]]
+                    st.session_state.speakers.append([lat, lon, directions])
+                    st.session_state.heatmap_data = None
+                    st.success(f"スピーカー追加成功: 緯度 {lat}, 経度 {lon}, 方向 {directions}")
+                except Exception as e:
+                    st.error(f"スピーカー追加エラー: {e}")
+        
+        # スピーカー削除・編集
+        if st.session_state.speakers:
+            options = [f"{i}: ({s[0]:.6f}, {s[1]:.6f}) - 方向: {s[2]}" for i, s in enumerate(st.session_state.speakers)]
+            selected = st.selectbox("スピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
+            col_del, col_edit = st.columns(2)
+            with col_del:
+                if st.button("選択したスピーカーを削除"):
+                    try:
+                        del st.session_state.speakers[selected]
+                        st.session_state.heatmap_data = None
+                        st.success("スピーカー削除成功")
+                    except Exception as e:
+                        st.error(f"削除エラー: {e}")
+            with col_edit:
+                if st.button("選択したスピーカーを編集"):
+                    st.session_state.edit_index = selected
+        else:
+            st.info("スピーカーがありません。")
+        
+        if st.session_state.get("edit_index") is not None:
+            with st.form("edit_form"):
+                spk = st.session_state.speakers[st.session_state.edit_index]
+                new_lat = st.text_input("新しい緯度", value=str(spk[0]))
+                new_lon = st.text_input("新しい経度", value=str(spk[1]))
+                new_dirs = st.text_input("新しい方向（カンマ区切り）", value=",".join(str(x) for x in spk[2]))
+                submitted = st.form_submit_button("編集保存")
+                if submitted:
+                    try:
+                        lat_val = float(new_lat)
+                        lon_val = float(new_lon)
+                        directions_val = [parse_direction(x) for x in new_dirs.split(",")]
+                        st.session_state.speakers[st.session_state.edit_index] = [lat_val, lon_val, directions_val]
+                        st.session_state.heatmap_data = None
+                        st.success("スピーカー情報更新成功")
+                        st.session_state.edit_index = None
+                    except Exception as e:
+                        st.error(f"編集保存エラー: {e}")
+        
+        if st.button("スピーカーリセット"):
+            st.session_state.speakers = []
+            st.session_state.heatmap_data = None
+            st.success("スピーカーリセット完了")
+        
+        st.session_state.L0 = st.slider("初期音圧レベル (dB)", 50, 100, st.session_state.L0)
+        st.session_state.r_max = st.slider("最大伝播距離 (m)", 100, 2000, st.session_state.r_max)
+        
+        target_default = st.session_state.L0 - 20
+        target_level = st.slider("目標音圧レベル (dB)", st.session_state.L0 - 40, st.session_state.L0, target_default)
+        if st.button("自動最適配置を実行"):
+            lat_min = st.session_state.map_center[0] - 0.01
+            lat_max = st.session_state.map_center[0] + 0.01
+            lon_min = st.session_state.map_center[1] - 0.01
+            lon_max = st.session_state.map_center[1] + 0.01
+            grid_lat, grid_lon = np.meshgrid(
+                np.linspace(lat_min, lat_max, 50),
+                np.linspace(lon_min, lon_max, 50)
+            )
+            try:
+                optimized = optimize_speaker_placement(
+                    st.session_state.speakers,
+                    target_level,
+                    st.session_state.L0,
+                    st.session_state.r_max,
+                    grid_lat,
+                    grid_lon,
+                    iterations=10,
+                    delta=0.0001
+                )
+                st.session_state.speakers = optimized
+                st.session_state.heatmap_data = None
+                st.success("自動最適配置成功")
+            except Exception as e:
+                st.error(f"自動最適配置エラー: {e}")
+        
+        st.subheader("Gemini API 呼び出し")
+        gemini_query = st.text_input("Gemini に問い合わせる内容")
+        if st.button("Gemini API を実行"):
+            full_prompt = generate_gemini_prompt(gemini_query)
+            result = call_gemini_api(full_prompt)
+            st.session_state.gemini_result = result
+            st.success("Gemini API 実行完了")
+    
+    # メインパネル：地図とヒートマップの表示
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        lat_min = st.session_state.map_center[0] - 0.01
+        lat_max = st.session_state.map_center[0] + 0.01
+        lon_min = st.session_state.map_center[1] - 0.01
+        lon_max = st.session_state.map_center[1] + 0.01
+        grid_lat, grid_lon = np.meshgrid(
+            np.linspace(lat_min, lat_max, 100),
+            np.linspace(lon_min, lon_max, 100)
+        )
+        if st.session_state.heatmap_data is None:
+            st.session_state.heatmap_data = cached_calculate_heatmap(
+                st.session_state.speakers,
+                st.session_state.L0,
+                st.session_state.r_max,
+                grid_lat,
+                grid_lon
+            )
+        m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
+        for spk in st.session_state.speakers:
+            lat, lon, dirs = spk
+            popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})<br><b>方向</b>: {dirs}"
+            folium.Marker(location=[lat, lon], popup=folium.Popup(popup_text, max_width=300)).add_to(m)
+        if st.session_state.heatmap_data:
+            HeatMap(st.session_state.heatmap_data, min_opacity=0.3, max_opacity=0.8, radius=15, blur=20).add_to(m)
+        st_folium(m, width=700, height=500)
+    with col2:
+        csv_data = export_csv(
+            st.session_state.speakers,
+            ["スピーカー緯度", "スピーカー経度", "方向1", "方向2", "方向3"]
+        )
+        st.download_button("スピーカーCSVダウンロード", csv_data, "speakers.csv", "text/csv")
+    
+    with st.expander("デバッグ・テスト情報"):
+        st.write("スピーカー情報:", st.session_state.speakers)
+        count = len(st.session_state.heatmap_data) if st.session_state.heatmap_data else 0
+        st.write("ヒートマップデータの件数:", count)
+    
+    st.markdown("---")
+    st.subheader("Gemini API の回答（JSON含む）")
+    if st.session_state.gemini_result:
+        st.json(st.session_state.gemini_result)
+    else:
+        st.info("Gemini API の回答はまだありません。")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        st.error(f"予期しないエラーが発生しました: {e}")
