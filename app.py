@@ -13,7 +13,7 @@ import streamlit as st
 import pydeck as pdk
 
 # ------------------ 初期設定 ------------------
-st.set_page_config(page_title=""上島町　防災無線スピーカ設置場所考えるくん", layout="wide")
+st.set_page_config(page_title="上島町　防災無線スピーカ設置場所考えるくん", layout="wide")
 
 CUSTOM_CSS = """
 <style>
