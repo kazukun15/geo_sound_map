@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import requests
 import streamlit as st
 import pydeck as pdk
@@ -95,9 +94,9 @@ def export_csv(data):
 # ------------------ 音圧計算（方向対応） ------------------
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
-    各スピーカーからの音圧(dB)を計算する。
-    方向情報により、グリッド点への角度差のコサイン補正（最低0.3倍）を掛ける。
-    結果は (L0-40)～L0 にクリップされる。
+    各スピーカーからの音圧 (dB) を計算する。
+    方向情報により、グリッド点への角度差のコサイン補正（最低 0.3倍）を掛ける。
+    結果は (L0-40) ～ L0 にクリップされる。
     """
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
@@ -106,7 +105,7 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
         direction_deg = float(spk[3]) if len(spk) >= 4 else 0.0
         dlat = grid_lat - lat_s
         dlon = grid_lon - lon_s
-        distance = np.sqrt((dlat*111320)**2 + (dlon*111320*math.cos(math.radians(lat_s)))**2)
+        distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * math.cos(math.radians(lat_s)))**2)
         distance[distance < 1] = 1
         p_db = L0 - 20 * np.log10(distance)
         # 方向依存補正
@@ -325,33 +324,25 @@ def create_circle_geojson(lat, lon, radius, num_points=50):
     }
     return geojson
 
-def animate_propagation(speaker, base_layers, view_state):
+def animate_propagation(speaker, base_layers, view_state, L0):
+    """
+    伝搬アニメーション：選択したスピーカーからの音圧伝搬を、音圧に応じて
+    現在の半径 r に対し p_db = L0 - 20*log10(r) を計算し、その値に応じた透明度で円を表示します。
+    アニメーション終了後、最後の状態をそのまま表示します。
+    """
     container = st.empty()
     num_steps = 20
     max_radius = 300  # 最大半径 (m)
-    # 拡大フェーズ
-    for step in range(1, num_steps+1):
+    final_deck = None
+    for step in range(1, num_steps + 1):
         radius = (step / num_steps) * max_radius
+        # 計算: 音圧 (dB) = L0 - 20 * log10(radius)
+        effective_radius = radius if radius >= 1 else 1
+        p_db = L0 - 20 * math.log10(effective_radius)
+        # 0～40 dBの範囲で補間（L0: 最大, L0-40: 最小）
+        alpha = int(255 * (p_db - (L0 - 40)) / 40)
+        alpha = max(0, min(alpha, 255))
         circle_geo = create_circle_geojson(speaker[0], speaker[1], radius)
-        anim_layer = pdk.Layer(
-            "GeoJsonLayer",
-            data=circle_geo,
-            get_fill_color=[255, 0, 0, 80],
-            get_line_color=[255, 0, 0],
-            line_width_min_pixels=2,
-        )
-        current_layers = base_layers + [anim_layer]
-        deck = pdk.Deck(
-            layers=current_layers,
-            initial_view_state=view_state,
-            tooltip={"text": "{label}\n方向: {dir_deg}\n音圧: {value}"}
-        )
-        container.pydeck_chart(deck)
-        time.sleep(0.3)
-    # フェードアウトフェーズ：徐々にアルファ値を下げる
-    for fade in range(10, -1, -1):
-        alpha = int(80 * (fade / 10))
-        circle_geo = create_circle_geojson(speaker[0], speaker[1], max_radius)
         anim_layer = pdk.Layer(
             "GeoJsonLayer",
             data=circle_geo,
@@ -366,9 +357,10 @@ def animate_propagation(speaker, base_layers, view_state):
             tooltip={"text": "{label}\n方向: {dir_deg}\n音圧: {value}"}
         )
         container.pydeck_chart(deck)
-        time.sleep(0.2)
-    # 最終状態の deck を返す（リフレッシュせずそのまま残す）
-    final_deck = deck
+        time.sleep(0.3)
+        final_deck = deck
+    # 最終状態を維持
+    container.empty()
     return final_deck
 
 # ------------------ メインUI ------------------
@@ -377,13 +369,11 @@ def main():
     
     # セッション初期化
     if "map_center" not in st.session_state:
-        st.session_state.map_center = [34.25, 133.20]  # 上島町中心
+        st.session_state.map_center = [34.25, 133.20]
     if "map_zoom" not in st.session_state:
         st.session_state.map_zoom = 11
     if "speakers" not in st.session_state:
-        st.session_state.speakers = [
-            [34.25, 133.20, "初期スピーカーA", 0.0]
-        ]
+        st.session_state.speakers = [[34.25, 133.20, "初期スピーカーA", 0.0]]
     if "heatmap_data" not in st.session_state:
         st.session_state.heatmap_data = None
     if "L0" not in st.session_state:
@@ -399,7 +389,7 @@ def main():
     if "selected_index" not in st.session_state:
         st.session_state.selected_index = None
 
-    # サイドバー操作
+    # サイドバー
     with st.sidebar:
         st.header("操作パネル")
         upfile = st.file_uploader("CSVアップロード", type=["csv"])
@@ -431,7 +421,8 @@ def main():
                     st.error(f"追加失敗: {e}")
         
         if st.session_state.speakers:
-            opts = [f"{i}: ({s[0]:.4f},{s[1]:.4f}) - {s[2]}, 方向:{s[3] if len(s)>=4 else 0}" for i, s in enumerate(st.session_state.speakers)]
+            opts = [f"{i}: ({s[0]:.4f},{s[1]:.4f}) - {s[2]}, 方向:{s[3] if len(s)>=4 else 0}" 
+                    for i, s in enumerate(st.session_state.speakers)]
             sel = st.selectbox("スピーカー選択", list(range(len(opts))), format_func=lambda i: opts[i])
             st.session_state.selected_index = sel
             c1, c2 = st.columns(2)
@@ -455,7 +446,7 @@ def main():
                 new_lat = st.text_input("緯度", value=str(spk[0]))
                 new_lon = st.text_input("経度", value=str(spk[1]))
                 new_lbl = st.text_input("ラベル", value=spk[2])
-                new_dir = st.text_input("方向", value=str(spk[3] if len(spk)>=4 else "0"))
+                new_dir = st.text_input("方向", value=str(spk[3] if len(spk) >= 4 else "0"))
                 if st.form_submit_button("編集保存"):
                     try:
                         latv = float(new_lat)
@@ -500,7 +491,8 @@ def main():
         flag = s[3] if len(s) >= 4 else ""
         spk_list.append([s[0], s[1], s[2], flag])
     spk_df = pd.DataFrame(spk_list, columns=["lat", "lon", "label", "flag"])
-    spk_df["z"] = 30  # 3Dモデル表示用の高さ
+    spk_df["z"] = 30  # 3Dモデル表示用
+    # 初期スピーカーは常に 3D モデルで表示（scatter_layer は使用しない）
     spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x=="new" else [0, 0, 255])
     
     # ------------------ レイヤー作成 ------------------
@@ -515,8 +507,6 @@ def main():
             layers.append(heatmap_layer)
         else:
             st.info("ヒートマップデータが空です。")
-        scatter_layer = create_scatter_layer(spk_df)
-        layers.append(scatter_layer)
     else:
         col_df = get_column_data(grid_lat, grid_lon, st.session_state.speakers, st.session_state.L0, st.session_state.r_max)
         if not col_df.empty:
@@ -524,8 +514,6 @@ def main():
             layers.append(column_layer)
         else:
             st.info("3Dカラムデータが空です。")
-        scatter_layer = create_scatter_layer(spk_df)
-        layers.append(scatter_layer)
     
     # すべてのスピーカーを 3Dモデルで表示 (ScenegraphLayer)
     speaker_3d_layer = create_speaker_3d_layer(spk_df)
@@ -557,8 +545,9 @@ def main():
     # ------------------ アニメーション処理 ------------------
     if st.session_state.get("animate", False) and st.session_state.selected_index is not None:
         selected_spk = st.session_state.speakers[st.session_state.selected_index]
-        # Animate and obtain final deck (without clearing the view)
-        final_deck = animate_propagation(selected_spk, layers.copy(), view_state)
+        base_layers = layers.copy()
+        # アニメーションは音圧に応じた alpha 値を計算して表示、最終状態を維持
+        final_deck = animate_propagation(selected_spk, base_layers, view_state, st.session_state.L0)
         st.session_state.animate = False
         st.pydeck_chart(final_deck)
     else:
