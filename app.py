@@ -13,7 +13,7 @@ import streamlit as st
 import pydeck as pdk
 
 # ------------------ 初期設定 ------------------
-st.set_page_config(page_title="上島町　防災スピーカ設置場所考える君", layout="wide")
+st.set_page_config(page_title=""上島町　防災無線スピーカ設置場所考えるくん", layout="wide")
 
 CUSTOM_CSS = """
 <style>
@@ -433,7 +433,7 @@ def animate_individual_propagation(speaker, base_layers, view_state, L0, r_max, 
 
 # ------------------ メインUI ------------------
 def main():
-    st.title("愛媛県上島町 全域＋スピーカー伝搬アニメーション")
+    st.title("上島町　防災無線スピーカ設置場所考えるくん")
     
     # セッション初期化
     if "map_center" not in st.session_state:
