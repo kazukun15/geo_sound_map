@@ -174,7 +174,7 @@ def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=
         levels = sorted(raw_levels)  # 昇順にする
     sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     
-    # デバッグ：sound_grid の最小・最大値を表示
+    # デバッグ用に sound_grid の最小・最大値を表示
     st.sidebar.write("sound_grid min:", np.nanmin(sound_grid))
     st.sidebar.write("sound_grid max:", np.nanmax(sound_grid))
     
@@ -184,7 +184,7 @@ def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=
     for level_idx, segs in enumerate(c.allsegs):
         color = colors[level_idx % len(colors)]
         for seg in segs:
-            coords = [[p[1], p[0]] for p in seg]  # Foliumは [lat, lon] 順
+            coords = [[p[1], p[0]] for p in seg]  # Foliumは [lat, lon] の順
             folium.PolyLine(coords, color=color, weight=2).add_to(m)
     plt.close(fig)
 
@@ -265,6 +265,9 @@ def extract_speaker_proposals(response_text):
     return results
 
 def add_speaker_proposals_from_gemini():
+    """
+    Gemini の回答に新設の緯度・経度が含まれている場合、それを抽出しスピーカーに追加する。
+    """
     if "gemini_result" not in st.session_state or not st.session_state.gemini_result:
         st.error("Gemini API の回答がありません。")
         return
@@ -277,12 +280,12 @@ def add_speaker_proposals_from_gemini():
                 st.session_state.speakers.append(proposal)
                 added_count += 1
         if added_count > 0:
-            st.success(f"Gemini の提案から {added_count} 件のスピーカー情報を追加しました。")
+            st.success(f"Gemini の回答から {added_count} 件の新設スピーカー情報を追加しました。")
             st.session_state.heatmap_data = None
         else:
-            st.info("Gemini の提案から新たなスピーカー情報は見つかりませんでした。")
+            st.info("Gemini の回答から新たなスピーカー情報は見つかりませんでした。")
     else:
-        st.info("Gemini の提案からスピーカー情報の抽出に失敗しました。")
+        st.info("Gemini の回答からスピーカー情報の抽出に失敗しました。")
 
 # ----------------------------------------------------------------
 # ThreadPoolExecutor（非同期処理）
@@ -324,7 +327,7 @@ def main():
     with st.sidebar:
         st.header("操作パネル")
         
-        # CSVファイルアップロードと「CSVからスピーカー登録」ボタン
+        # CSVファイルアップロード
         uploaded_file = st.file_uploader("CSVファイルをアップロード", type=["csv"])
         if uploaded_file:
             if st.button("CSVからスピーカー登録"):
@@ -410,10 +413,8 @@ def main():
             result = call_gemini_api(full_prompt)
             st.session_state.gemini_result = result
             st.success("Gemini API 実行完了")
-        
-        if st.session_state.get("gemini_result"):
-            if st.button("Gemini 提案をスピーカーに追加"):
-                add_speaker_proposals_from_gemini()
+            # 自動的にGeminiの回答からスピーカー提案を抽出して追加
+            add_speaker_proposals_from_gemini()
     
     # メインパネル：地図とヒートマップ or 等高線の表示
     col1, col2 = st.columns([3, 1])
@@ -437,7 +438,7 @@ def main():
                     grid_lon
                 )
         else:
-            st.session_state.heatmap_data = None  # 等高線の場合は毎回再計算
+            st.session_state.heatmap_data = None
         
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
         
