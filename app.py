@@ -27,7 +27,7 @@ div.stButton > button {
     font-size: 16px; 
     border-radius: 8px; 
     cursor: pointer;
-    text-align: left;
+    text-align: left;  /* ボタン内の文字を左揃え */
 }
 div.stButton > button:hover { background-color: #45a049; }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 {
@@ -317,7 +317,7 @@ def create_heatmap_layer(heat_df):
         data=heat_df,
         get_position=["longitude", "latitude"],
         get_weight="weight",
-        radiusPixels=15,  # ズームイン時にも見やすいように調整
+        radiusPixels=15,  # ズームイン時にも見やすく
         min_opacity=0.05,
         max_opacity=0.1,
     )
@@ -336,70 +336,74 @@ def create_column_layer(col_df):
     )
 
 # ------------------ 全スピーカー伝搬アニメーション用 ------------------
-def animate_all_propagation(speakers, base_layers, view_state, L0):
+def animate_all_propagation(speakers, base_layers, view_state, L0, repeat=2):
     """
-    全スピーカーからの音圧伝搬アニメーションを同時に表示する。
-    各スピーカーの円の透明度は音圧に基づいて計算し、最終状態をそのまま維持する。
+    全スピーカーからの音圧伝搬アニメーションを、指定回数 (repeat) 繰り返し表示する。
+    最終サイクルではフェードアウトせず、円の状態をそのまま維持する。
     """
     container = st.empty()
     num_steps = 20
     max_radius = 300  # 最大半径 (m)
     final_deck = None
-    for step in range(1, num_steps + 1):
-        radius = (step / num_steps) * max_radius
-        anim_layers = []
-        for spk in speakers:
-            circle_geo = create_circle_geojson(spk[0], spk[1], radius)
-            effective_radius = radius if radius >= 1 else 1
-            p_db = L0 - 20 * math.log10(effective_radius)
-            alpha = int(255 * (p_db - (L0 - 40)) / 40)
-            alpha = max(0, min(alpha, 255))
-            # 青い線に変更：線の色と塗りの色を青に設定
-            anim_layer = pdk.Layer(
-                "GeoJsonLayer",
-                data=circle_geo,
-                get_fill_color=[0, 0, 255, alpha],
-                get_line_color=[0, 0, 255],
-                line_width_min_pixels=2,
+    for cycle in range(repeat):
+        # 拡大フェーズ
+        for step in range(1, num_steps + 1):
+            radius = (step / num_steps) * max_radius
+            anim_layers = []
+            for spk in speakers:
+                circle_geo = create_circle_geojson(spk[0], spk[1], radius)
+                effective_radius = radius if radius >= 1 else 1
+                p_db = L0 - 20 * math.log10(effective_radius)
+                alpha = int(255 * (p_db - (L0 - 40)) / 40)
+                alpha = max(0, min(alpha, 255))
+                # 円の線を青に変更
+                anim_layer = pdk.Layer(
+                    "GeoJsonLayer",
+                    data=circle_geo,
+                    get_fill_color=[0, 0, 255, alpha],
+                    get_line_color=[0, 0, 255],
+                    line_width_min_pixels=2,
+                )
+                anim_layers.append(anim_layer)
+            current_layers = base_layers + anim_layers
+            deck = pdk.Deck(
+                layers=current_layers,
+                initial_view_state=view_state,
+                tooltip={"text": "{label}\n方向: {direction} d\n音圧: {value} dB"}
             )
-            anim_layers.append(anim_layer)
-        current_layers = base_layers + anim_layers
-        deck = pdk.Deck(
-            layers=current_layers,
-            initial_view_state=view_state,
-            tooltip={"text": "{label}\n方向: {direction} d\n音圧: {value} dB"}
-        )
-        container.pydeck_chart(deck)
-        time.sleep(0.25)
-        final_deck = deck
-    for fade in range(10, -1, -1):
-        fade_alpha = int(80 * (fade / 10))
-        anim_layers = []
-        for spk in speakers:
-            circle_geo = create_circle_geojson(spk[0], spk[1], max_radius)
-            anim_layer = pdk.Layer(
-                "GeoJsonLayer",
-                data=circle_geo,
-                get_fill_color=[0, 0, 255, fade_alpha],
-                get_line_color=[0, 0, 255],
-                line_width_min_pixels=2,
-            )
-            anim_layers.append(anim_layer)
-        current_layers = base_layers + anim_layers
-        deck = pdk.Deck(
-            layers=current_layers,
-            initial_view_state=view_state,
-            tooltip={"text": "{label}\n方向: {direction} d\n音圧: {value} dB"}
-        )
-        container.pydeck_chart(deck)
-        time.sleep(0.15)
-        final_deck = deck
-    container.empty()
+            container.pydeck_chart(deck)
+            time.sleep(0.25)
+            final_deck = deck
+        # フェードアウトフェーズ（最終サイクル以外のみ）
+        if cycle < repeat - 1:
+            for fade in range(10, -1, -1):
+                fade_alpha = int(80 * (fade / 10))
+                anim_layers = []
+                for spk in speakers:
+                    circle_geo = create_circle_geojson(spk[0], spk[1], max_radius)
+                    anim_layer = pdk.Layer(
+                        "GeoJsonLayer",
+                        data=circle_geo,
+                        get_fill_color=[0, 0, 255, fade_alpha],
+                        get_line_color=[0, 0, 255],
+                        line_width_min_pixels=2,
+                    )
+                    anim_layers.append(anim_layer)
+                current_layers = base_layers + anim_layers
+                deck = pdk.Deck(
+                    layers=current_layers,
+                    initial_view_state=view_state,
+                    tooltip={"text": "{label}\n方向: {direction} d\n音圧: {value} dB"}
+                )
+                container.pydeck_chart(deck)
+                time.sleep(0.15)
+                final_deck = deck
+    # 最終サイクルではフェードアウトせずそのまま状態を維持するため、containerは空にしない
     return final_deck
 
 # ------------------ 個別スピーカー伝搬アニメーション用 ------------------
-def animate_individual_propagation(speaker, base_layers, view_state, L0):
-    return animate_all_propagation([speaker], base_layers, view_state, L0)
+def animate_individual_propagation(speaker, base_layers, view_state, L0, repeat=2):
+    return animate_all_propagation([speaker], base_layers, view_state, L0, repeat=repeat)
 
 # ------------------ メインUI ------------------
 def main():
@@ -518,7 +522,7 @@ def main():
             st.success("Gemini完了")
             add_speaker_proposals_from_gemini()
         
-        # 個別と全体の伝搬アニメーションボタン
+        # 個別と全体の伝搬アニメーションボタンを分ける
         if st.session_state.speakers:
             if st.button("個別スピーカー伝搬アニメーション表示"):
                 st.session_state.animate_individual = True
@@ -529,7 +533,7 @@ def main():
     grid_lat, grid_lon = generate_grid_for_kamijima(resolution=80)
     
     # ------------------ スピーカーのデータ分割 ------------------
-    # 最初の1件は初期スピーカーとして3Dモデル表示、以降は追加スピーカーは小さい青丸で表示
+    # 初期スピーカー（最初の1件）は3Dモデル表示、追加スピーカーは小さい青丸で表示
     default_spk_list = st.session_state.speakers[0:1] if len(st.session_state.speakers) >= 1 else []
     added_spk_list = st.session_state.speakers[1:] if len(st.session_state.speakers) > 1 else []
     default_spk_df = pd.DataFrame(default_spk_list, columns=["lat", "lon", "label", "direction"]) if default_spk_list else pd.DataFrame(columns=["lat", "lon", "label", "direction"])
@@ -590,12 +594,12 @@ def main():
     
     # ------------------ アニメーション処理 ------------------
     if st.session_state.get("animate_all", False):
-        final_deck = animate_all_propagation(st.session_state.speakers, layers.copy(), view_state, st.session_state.L0)
+        final_deck = animate_all_propagation(st.session_state.speakers, layers.copy(), view_state, st.session_state.L0, repeat=2)
         st.session_state.animate_all = False
         st.pydeck_chart(final_deck)
     elif st.session_state.get("animate_individual", False) and st.session_state.selected_index is not None:
         selected_spk = st.session_state.speakers[st.session_state.selected_index]
-        final_deck = animate_individual_propagation(selected_spk, layers.copy(), view_state, st.session_state.L0)
+        final_deck = animate_individual_propagation(selected_spk, layers.copy(), view_state, st.session_state.L0, repeat=2)
         st.session_state.animate_individual = False
         st.pydeck_chart(final_deck)
     else:
