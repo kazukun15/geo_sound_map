@@ -218,8 +218,8 @@ def create_heatmap_layer(heat_df):
         get_position=["longitude", "latitude"],
         get_weight="weight",
         radiusPixels=dynamic_radius_pixels(st.session_state.map_zoom),
-        min_opacity=0.05,
-        max_opacity=0.1,
+        min_opacity=0.1,   # 透明度の下限（より透明に）
+        max_opacity=0.3,   # 透明度の上限（背景が見やすい）
         colorRange=[
             [0, 0, 255, 255],     # 青（低音圧）
             [0, 255, 255, 255],   # シアン
