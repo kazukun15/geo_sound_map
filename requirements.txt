@@ -3,7 +3,5 @@ folium
 streamlit-folium
 numpy
 pandas
-branca
 requests
-rasterio==1.2.10
-GDAL==3.4.1
+branca
