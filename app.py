@@ -27,7 +27,7 @@ div.stButton > button {
     font-size: 16px; 
     border-radius: 8px; 
     cursor: pointer;
-    text-align: left;  /* ボタン内の文字を左揃え */
+    text-align: left;
 }
 div.stButton > button:hover { background-color: #45a049; }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 {
@@ -317,7 +317,7 @@ def create_heatmap_layer(heat_df):
         data=heat_df,
         get_position=["longitude", "latitude"],
         get_weight="weight",
-        radiusPixels=15,  # ズームイン時にも見やすいように調整
+        radiusPixels=15,  # ズームイン時にも見やすく調整
         min_opacity=0.05,
         max_opacity=0.1,
         colorRange=[
@@ -343,14 +343,15 @@ def create_column_layer(col_df):
     )
 
 # ------------------ 全スピーカー伝搬アニメーション用 ------------------
-def animate_all_propagation(speakers, base_layers, view_state, L0, repeat=2):
+def animate_all_propagation(speakers, base_layers, view_state, L0, r_max, repeat=2):
     """
     全スピーカーからの音圧伝搬アニメーションを、指定回数 (repeat) 繰り返し表示する。
+    最大伝播距離 (r_max) に応じて円の最大半径を設定し、
     最終サイクルではフェードアウトせず、円の状態をそのまま維持する。
     """
     container = st.empty()
     num_steps = 20
-    max_radius = 300  # 最大半径 (m)
+    max_radius = r_max  # 最大伝播距離に応じる
     final_deck = None
     for cycle in range(repeat):
         # 拡大フェーズ
@@ -363,7 +364,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0, repeat=2):
                 p_db = L0 - 20 * math.log10(effective_radius)
                 alpha = int(255 * (p_db - (L0 - 40)) / 40)
                 alpha = max(0, min(alpha, 255))
-                # 円の線と塗りを青に設定
+                # 円の塗りと線を青に設定
                 anim_layer = pdk.Layer(
                     "GeoJsonLayer",
                     data=circle_geo,
@@ -381,7 +382,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0, repeat=2):
             container.pydeck_chart(deck)
             time.sleep(0.25)
             final_deck = deck
-        # 最終サイクルではフェードアウトせずそのまま状態を維持する
+        # 最終サイクルではフェードアウトせず状態を維持
         if cycle < repeat - 1:
             for fade in range(10, -1, -1):
                 fade_alpha = int(80 * (fade / 10))
@@ -405,12 +406,12 @@ def animate_all_propagation(speakers, base_layers, view_state, L0, repeat=2):
                 container.pydeck_chart(deck)
                 time.sleep(0.15)
                 final_deck = deck
-    container.empty()
+    # アニメーション終了後、container.empty() を呼ばず最終状態をそのまま表示
     return final_deck
 
 # ------------------ 個別スピーカー伝搬アニメーション用 ------------------
-def animate_individual_propagation(speaker, base_layers, view_state, L0, repeat=2):
-    return animate_all_propagation([speaker], base_layers, view_state, L0, repeat=repeat)
+def animate_individual_propagation(speaker, base_layers, view_state, L0, r_max, repeat=2):
+    return animate_all_propagation([speaker], base_layers, view_state, L0, r_max, repeat=repeat)
 
 # ------------------ メインUI ------------------
 def main():
@@ -601,12 +602,16 @@ def main():
     
     # ------------------ アニメーション処理 ------------------
     if st.session_state.get("animate_all", False):
-        final_deck = animate_all_propagation(st.session_state.speakers, layers.copy(), view_state, st.session_state.L0, repeat=2)
+        final_deck = animate_all_propagation(
+            st.session_state.speakers, layers.copy(), view_state, st.session_state.L0, st.session_state.r_max, repeat=2
+        )
         st.session_state.animate_all = False
         st.pydeck_chart(final_deck)
     elif st.session_state.get("animate_individual", False) and st.session_state.selected_index is not None:
         selected_spk = st.session_state.speakers[st.session_state.selected_index]
-        final_deck = animate_individual_propagation(selected_spk, layers.copy(), view_state, st.session_state.L0, repeat=2)
+        final_deck = animate_individual_propagation(
+            selected_spk, layers.copy(), view_state, st.session_state.L0, st.session_state.r_max, repeat=2
+        )
         st.session_state.animate_individual = False
         st.pydeck_chart(final_deck)
     else:
