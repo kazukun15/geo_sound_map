@@ -60,7 +60,7 @@ def parse_direction(dir_str):
 
 # ------------------ CSV 読み込み／書き出し ------------------
 def load_csv(file):
-    """CSVからスピーカー情報を読み込み、[[lat, lon, label, direction_deg], ...] を返す。"""
+    """CSVからスピーカー情報を読み込み、[[lat, lon, label, direction], ...] を返す。"""
     try:
         df = pd.read_csv(file)
         speakers = []
@@ -287,7 +287,7 @@ def add_speaker_proposals_from_gemini():
 # ------------------ ScenegraphLayer (3Dスピーカー) ------------------
 def create_speaker_3d_layer(spk_df):
     SCENEGRAPH_URL = "https://raw.githubusercontent.com/visgl/deck.gl-data/master/scenegraph/airplane/scene.gltf"
-    spk_df["z"] = 50  # すべてのスピーカーの3Dモデル表示用の高さを均一に50に固定
+    spk_df["z"] = 50  # 初期スピーカーは3Dモデルで表示（高さ50に固定）
     return pdk.Layer(
         "ScenegraphLayer",
         data=spk_df,
@@ -298,18 +298,19 @@ def create_speaker_3d_layer(spk_df):
         pickable=True
     )
 
-# ------------------ Pydeck レイヤー作成 ------------------
-def create_scatter_layer(spk_df):
+# ------------------ 追加スピーカー用 小さい散布図レイヤー ------------------
+def create_small_scatter_layer(spk_df):
     return pdk.Layer(
         "ScatterplotLayer",
         data=spk_df,
         get_position=["lon", "lat"],
-        get_radius=100,
-        get_fill_color="color",
+        get_radius=30,  # 小さい円
+        get_fill_color="[0, 0, 255, 255]",  # 青色
         pickable=True,
         auto_highlight=True,
     )
 
+# ------------------ Pydeck レイヤー作成 ------------------
 def create_heatmap_layer(heat_df):
     return pdk.Layer(
         "HeatmapLayer",
@@ -366,7 +367,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
         deck = pdk.Deck(
             layers=current_layers,
             initial_view_state=view_state,
-            tooltip={"text": "{label}\n方向: {flag}\n音圧: {value} dB"}
+            tooltip={"text": "{label}\n方向: {direction} d\n音圧: {value} dB"}
         )
         container.pydeck_chart(deck)
         time.sleep(0.3)
@@ -388,7 +389,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
         deck = pdk.Deck(
             layers=current_layers,
             initial_view_state=view_state,
-            tooltip={"text": "{label}\n方向: {flag}\n音圧: {value} dB"}
+            tooltip={"text": "{label}\n方向: {direction} d\n音圧: {value} dB"}
         )
         container.pydeck_chart(deck)
         time.sleep(0.2)
@@ -527,14 +528,13 @@ def main():
     # ------------------ グリッド生成 ------------------
     grid_lat, grid_lon = generate_grid_for_kamijima(resolution=80)
     
-    # ------------------ Pydeck 用スピーカー DataFrame ------------------
-    spk_list = []
-    for s in st.session_state.speakers:
-        flag = s[3] if len(s) >= 4 else ""
-        spk_list.append([s[0], s[1], s[2], flag])
-    spk_df = pd.DataFrame(spk_list, columns=["lat", "lon", "label", "flag"])
-    spk_df["z"] = 50  # すべてのスピーカーの3Dモデル表示用の高さを均一に50に固定
-    spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x=="new" else [0, 0, 255])
+    # ------------------ スピーカーのデータ分割 ------------------
+    default_spk_list = st.session_state.speakers[0:1] if len(st.session_state.speakers) >= 1 else []
+    added_spk_list = st.session_state.speakers[1:] if len(st.session_state.speakers) > 1 else []
+    default_spk_df = pd.DataFrame(default_spk_list, columns=["lat", "lon", "label", "direction"]) if default_spk_list else pd.DataFrame(columns=["lat", "lon", "label", "direction"])
+    if not default_spk_df.empty:
+        default_spk_df["z"] = 50
+    added_spk_df = pd.DataFrame(added_spk_list, columns=["lat", "lon", "label", "direction"]) if added_spk_list else pd.DataFrame(columns=["lat", "lon", "label", "direction"])
     
     # ------------------ レイヤー作成 ------------------
     layers = []
@@ -556,9 +556,23 @@ def main():
         else:
             st.info("3Dカラムデータが空です。")
     
-    # すべてのスピーカーは常に ScenegraphLayer で立体表示
-    speaker_3d_layer = create_speaker_3d_layer(spk_df)
-    layers.append(speaker_3d_layer)
+    # スピーカーは、初期スピーカーはScenegraphLayer、追加スピーカーは小さい青丸としてScatterLayerで表示
+    default_layer = create_speaker_3d_layer(default_spk_df) if not default_spk_df.empty else None
+    added_layer = None
+    if not added_spk_df.empty:
+        added_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=added_spk_df,
+            get_position=["lon", "lat"],
+            get_radius=30,  # 小さい円
+            get_fill_color="[0, 0, 255, 255]",  # 青色
+            pickable=True,
+            auto_highlight=True,
+        )
+    if default_layer:
+        layers.append(default_layer)
+    if added_layer:
+        layers.append(added_layer)
     
     # ------------------ 全体音圧範囲の表示 ------------------
     sgrid = compute_sound_grid(st.session_state.speakers, st.session_state.L0, st.session_state.r_max, grid_lat, grid_lon)
@@ -580,7 +594,7 @@ def main():
     base_deck = pdk.Deck(
         layers=layers,
         initial_view_state=view_state,
-        tooltip={"text": "{label}\n方向: {flag}\n音圧: {value} dB"}
+        tooltip={"text": "{label}\n方向: {direction} d\n音圧: {value} dB"}
     )
     
     # ------------------ アニメーション処理 ------------------
