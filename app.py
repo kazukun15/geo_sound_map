@@ -317,9 +317,16 @@ def create_heatmap_layer(heat_df):
         data=heat_df,
         get_position=["longitude", "latitude"],
         get_weight="weight",
-        radiusPixels=15,  # ズームイン時にも見やすく
+        radiusPixels=15,  # ズームイン時にも見やすいように調整
         min_opacity=0.05,
         max_opacity=0.1,
+        colorRange=[
+            [0, 0, 255, 255],     # 青（低音圧）
+            [0, 255, 255, 255],   # シアン
+            [0, 255, 0, 255],     # 緑
+            [255, 255, 0, 255],   # 黄色
+            [255, 0, 0, 255]      # 赤（高音圧）
+        ]
     )
 
 def create_column_layer(col_df):
@@ -356,7 +363,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0, repeat=2):
                 p_db = L0 - 20 * math.log10(effective_radius)
                 alpha = int(255 * (p_db - (L0 - 40)) / 40)
                 alpha = max(0, min(alpha, 255))
-                # 円の線を青に変更
+                # 円の線と塗りを青に設定
                 anim_layer = pdk.Layer(
                     "GeoJsonLayer",
                     data=circle_geo,
@@ -374,7 +381,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0, repeat=2):
             container.pydeck_chart(deck)
             time.sleep(0.25)
             final_deck = deck
-        # フェードアウトフェーズ（最終サイクル以外のみ）
+        # 最終サイクルではフェードアウトせずそのまま状態を維持する
         if cycle < repeat - 1:
             for fade in range(10, -1, -1):
                 fade_alpha = int(80 * (fade / 10))
@@ -398,7 +405,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0, repeat=2):
                 container.pydeck_chart(deck)
                 time.sleep(0.15)
                 final_deck = deck
-    # 最終サイクルではフェードアウトせずそのまま状態を維持するため、containerは空にしない
+    container.empty()
     return final_deck
 
 # ------------------ 個別スピーカー伝搬アニメーション用 ------------------
