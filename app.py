@@ -27,7 +27,7 @@ div.stButton > button {
     font-size: 16px; 
     border-radius: 8px; 
     cursor: pointer;
-    text-align: left;  /* ボタン内の文字を左揃え */
+    text-align: left;
 }
 div.stButton > button:hover { background-color: #45a049; }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 {
@@ -112,7 +112,7 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
         direction_deg = float(spk[3]) if len(spk) >= 4 else 0.0
         dlat = grid_lat - lat_s
         dlon = grid_lon - lon_s
-        distance = np.sqrt((dlat*111320)**2 + (dlon*111320*math.cos(math.radians(lat_s)))**2)
+        distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * math.cos(math.radians(lat_s)))**2)
         distance[distance < 1] = 1
         p_db = L0 - 20 * np.log10(distance)
         # 方向依存補正
@@ -157,8 +157,7 @@ def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
 def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
     """
     ColumnLayer用データ生成：
-    音圧を正規化し、高さを 0～500 に（従来0～300から変更）、
-    色は弱→青、強→赤（半透明）に設定。
+    音圧を正規化し、高さを 0～500 に、色は弱→青、強→赤（半透明）に設定。
     """
     sgrid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     if np.all(np.isnan(sgrid)):
@@ -174,7 +173,7 @@ def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
             val = sgrid[i, j]
             if not np.isnan(val):
                 norm = (val - val_min) / (val_max - val_min)
-                elevation = norm * 500.0  # 高さを 0～500 に拡大
+                elevation = norm * 500.0  # 高さを0～500に拡大
                 r = int(255 * norm)
                 g = int(255 * (1 - norm))
                 b = 128
@@ -187,6 +186,25 @@ def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
                     "color": [r, g, b, a]
                 })
     return pd.DataFrame(data_list)
+
+# ------------------ 円形ジオJSON生成 ------------------
+def create_circle_geojson(lat, lon, radius, num_points=50):
+    """
+    指定した中心 (lat, lon) と半径 (m) で、円形のGeoJSONを生成する。
+    """
+    points = []
+    for i in range(num_points):
+        angle = 2 * math.pi * i / num_points
+        dlat = (radius * math.sin(angle)) / 111320
+        dlon = (radius * math.cos(angle)) / (111320 * math.cos(math.radians(lat)))
+        points.append([lon + dlon, lat + dlat])
+    points.append(points[0])
+    geojson = {
+        "type": "Feature",
+        "geometry": {"type": "Polygon", "coordinates": [points]},
+        "properties": {}
+    }
+    return geojson
 
 # ------------------ Gemini API 連携 ------------------
 def generate_gemini_prompt(user_query):
@@ -269,7 +287,7 @@ def add_speaker_proposals_from_gemini():
 # ------------------ ScenegraphLayer (3Dスピーカー) ------------------
 def create_speaker_3d_layer(spk_df):
     SCENEGRAPH_URL = "https://raw.githubusercontent.com/visgl/deck.gl-data/master/scenegraph/airplane/scene.gltf"
-    spk_df["z"] = 50  # すべてのスピーカーを同一高さ(50)に固定
+    spk_df["z"] = 50  # すべてのスピーカーの3Dモデル表示用の高さを均一に50に固定
     return pdk.Layer(
         "ScenegraphLayer",
         data=spk_df,
@@ -320,7 +338,7 @@ def create_column_layer(col_df):
 def animate_all_propagation(speakers, base_layers, view_state, L0):
     """
     全スピーカーからの音圧伝搬アニメーションを同時に表示する。
-    各スピーカーについて、円の半径に応じた透明度 (alpha) を音圧に基づいて計算し表示、
+    各スピーカーについて、円の半径に応じた透明度を音圧に基づいて計算し表示し、
     最終状態をそのまま維持する。
     """
     container = st.empty()
@@ -467,7 +485,7 @@ def main():
                 new_lat = st.text_input("緯度", value=str(spk[0]))
                 new_lon = st.text_input("経度", value=str(spk[1]))
                 new_lbl = st.text_input("ラベル", value=spk[2])
-                new_dir = st.text_input("方向", value=str(spk[3] if len(spk) >= 4 else "0"))
+                new_dir = st.text_input("方向", value=str(spk[3] if len(spk)>=4 else "0"))
                 if st.form_submit_button("編集保存"):
                     try:
                         latv = float(new_lat)
@@ -515,7 +533,7 @@ def main():
         flag = s[3] if len(s) >= 4 else ""
         spk_list.append([s[0], s[1], s[2], flag])
     spk_df = pd.DataFrame(spk_list, columns=["lat", "lon", "label", "flag"])
-    spk_df["z"] = 50  # すべてのスピーカーの3Dモデル表示用の高さを均一に 50 に固定
+    spk_df["z"] = 50  # すべてのスピーカーの3Dモデル表示用の高さを均一に50に固定
     spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x=="new" else [0, 0, 255])
     
     # ------------------ レイヤー作成 ------------------
