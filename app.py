@@ -206,6 +206,42 @@ def create_circle_geojson(lat, lon, radius, num_points=50):
     }
     return geojson
 
+# ------------------ ヒートマップの動的設定 ------------------
+def dynamic_radius_pixels(zoom):
+    """ズームレベルに応じて、radiusPixels を動的に調整する（zoom=11 のときは約15を基準とする）"""
+    return max(5, int(15 * (11 / zoom)))
+
+def create_heatmap_layer(heat_df):
+    return pdk.Layer(
+        "HeatmapLayer",
+        data=heat_df,
+        get_position=["longitude", "latitude"],
+        get_weight="weight",
+        radiusPixels=dynamic_radius_pixels(st.session_state.map_zoom),
+        min_opacity=0.05,
+        max_opacity=0.1,
+        colorRange=[
+            [0, 0, 255, 255],     # 青（低音圧）
+            [0, 255, 255, 255],   # シアン
+            [0, 255, 0, 255],     # 緑
+            [255, 255, 0, 255],   # 黄色
+            [255, 0, 0, 255]      # 赤（高音圧）
+        ]
+    )
+
+def create_column_layer(col_df):
+    return pdk.Layer(
+        "ColumnLayer",
+        data=col_df,
+        get_position=["lon", "lat"],
+        get_elevation="elevation",
+        elevation_scale=1,
+        radius=20,
+        get_fill_color="color",
+        pickable=True,
+        auto_highlight=True,
+    )
+
 # ------------------ Gemini API 連携 ------------------
 def generate_gemini_prompt(user_query):
     spk_info = ""
@@ -311,24 +347,6 @@ def create_small_scatter_layer(spk_df):
     )
 
 # ------------------ Pydeck レイヤー作成 ------------------
-def create_heatmap_layer(heat_df):
-    return pdk.Layer(
-        "HeatmapLayer",
-        data=heat_df,
-        get_position=["longitude", "latitude"],
-        get_weight="weight",
-        radiusPixels=15,  # ズームイン時にも見やすく調整
-        min_opacity=0.05,
-        max_opacity=0.1,
-        colorRange=[
-            [0, 0, 255, 255],     # 青（低音圧）
-            [0, 255, 255, 255],   # シアン
-            [0, 255, 0, 255],     # 緑
-            [255, 255, 0, 255],   # 黄色
-            [255, 0, 0, 255]      # 赤（高音圧）
-        ]
-    )
-
 def create_column_layer(col_df):
     return pdk.Layer(
         "ColumnLayer",
@@ -346,12 +364,12 @@ def create_column_layer(col_df):
 def animate_all_propagation(speakers, base_layers, view_state, L0, r_max, repeat=2):
     """
     全スピーカーからの音圧伝搬アニメーションを、指定回数 (repeat) 繰り返し表示する。
-    最大伝播距離 (r_max) に応じて円の最大半径を設定し、
+    最大伝播距離 (r_max) に応じた円の最大半径でアニメーションを行い、
     最終サイクルではフェードアウトせず、円の状態をそのまま維持する。
     """
     container = st.empty()
     num_steps = 20
-    max_radius = r_max  # 最大伝播距離に応じる
+    max_radius = r_max  # 最大伝播距離を利用
     final_deck = None
     for cycle in range(repeat):
         # 拡大フェーズ
@@ -382,7 +400,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0, r_max, repeat
             container.pydeck_chart(deck)
             time.sleep(0.25)
             final_deck = deck
-        # 最終サイクルではフェードアウトせず状態を維持
+        # 最終サイクルではフェードアウトせずそのまま状態を維持
         if cycle < repeat - 1:
             for fade in range(10, -1, -1):
                 fade_alpha = int(80 * (fade / 10))
@@ -406,7 +424,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0, r_max, repeat
                 container.pydeck_chart(deck)
                 time.sleep(0.15)
                 final_deck = deck
-    # アニメーション終了後、container.empty() を呼ばず最終状態をそのまま表示
+    # アニメーション終了後、container.empty() は呼ばず最終状態を維持
     return final_deck
 
 # ------------------ 個別スピーカー伝搬アニメーション用 ------------------
@@ -530,7 +548,7 @@ def main():
             st.success("Gemini完了")
             add_speaker_proposals_from_gemini()
         
-        # 個別と全体の伝搬アニメーションボタンを分ける
+        # 個別と全体の伝搬アニメーションボタン
         if st.session_state.speakers:
             if st.button("個別スピーカー伝搬アニメーション表示"):
                 st.session_state.animate_individual = True
