@@ -100,8 +100,8 @@ def export_csv(data):
     """
     rows = []
     for entry in data:
-        if len(entry) == 3:
-            lat, lon, label = entry
+        if len(entry) >= 3:
+            lat, lon, label = entry[0], entry[1], entry[2]
             rows.append({
                 "latitude": lat,
                 "longitude": lon,
@@ -171,21 +171,43 @@ def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=
     """
     if levels is None:
         raw_levels = [L0 - 40, L0 - 30, L0 - 20, L0 - 10]
-        levels = sorted(raw_levels)  # 昇順にする
+        levels = sorted(raw_levels)
     sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     
-    # デバッグ用: sound_grid の最小・最大値をサイドバーに表示
-    st.sidebar.write("sound_grid min:", np.nanmin(sound_grid))
-    st.sidebar.write("sound_grid max:", np.nanmax(sound_grid))
+    # sound_grid の有効な値をチェック
+    try:
+        min_val = np.nanmin(sound_grid)
+        max_val = np.nanmax(sound_grid)
+    except Exception as e:
+        st.warning("sound_grid の値が取得できません。")
+        return
+    if np.isnan(min_val) or np.isnan(max_val) or min_val == max_val:
+        st.warning("sound_grid の値が無効なため、等高線を生成できません。")
+        return
     
     fig, ax = plt.subplots()
-    c = ax.contour(grid_lon, grid_lat, sound_grid, levels=levels)
+    try:
+        c = ax.contour(grid_lon, grid_lat, sound_grid, levels=levels)
+    except Exception as e:
+        st.error(f"Contour generation error: {e}")
+        plt.close(fig)
+        return
+    
+    # 等高線が見つからない場合のチェック
+    if not c.allsegs or all(len(segs) == 0 for segs in c.allsegs):
+        st.warning("有効な等高線が生成されませんでした。")
+        plt.close(fig)
+        return
+    
     colors = ["red", "blue", "green", "purple", "orange"]
     for level_idx, segs in enumerate(c.allsegs):
         color = colors[level_idx % len(colors)]
         for seg in segs:
+            if len(seg) == 0:
+                continue
             coords = [[p[1], p[0]] for p in seg]  # Foliumは [lat, lon] 順
-            folium.PolyLine(coords, color=color, weight=2).add_to(m)
+            if coords:
+                folium.PolyLine(coords, color=color, weight=2).add_to(m)
     plt.close(fig)
 
 # ----------------------------------------------------------------
@@ -198,7 +220,7 @@ def generate_gemini_prompt(user_query):
     条件：
       - 海など設置困難な場所は除外
       - スピーカー同士は300m以上離れていること
-      - 座標表記は「緯度: 34.255500, 経度: 133.207000」の形式で統一
+      - 座標表記は「緯度: 34.255500, 経度: 133.207000」で統一
     """
     speakers = st.session_state.speakers if "speakers" in st.session_state else []
     if speakers:
@@ -249,35 +271,34 @@ def call_gemini_api(query):
 def extract_speaker_proposals(response_text):
     """
     Gemini のレスポンステキストからスピーカー提案を抽出する関数です。
-    例として、Gemini の回答に以下のような記述が含まれる場合を想定：
-    
-    **新規スピーカーC:**
-      *   緯度: 34.259000, 経度: 133.201500
-      *   理由: ...
-    **新規スピーカーD:**
-      *   緯度: 34.255500, 経度: 133.207000
-      *   理由: ...
-      
-    この関数は、緯度と経度（および任意のラベル）が含まれていれば抽出し、[[lat, lon, label], ...] の形式で返します。
+    例:
+      **新規スピーカーC:**
+          *   緯度: 34.259000, 経度: 133.201500
+          *   理由: 既存スピーカーA/Bから北西方向に約400m離れた、比較的平坦な土地。
+      **新規スピーカーD:**
+          *   緯度: 34.255500, 経度: 133.207000
+          *   理由: 既存スピーカーA/Bから南東方向に約500m離れた、開けた場所。
+    この関数は、緯度・経度（および任意のラベル）が含まれていれば抽出し、
+    [[lat, lon, label, "new"], ...] の形式で返します。
     """
-    # 複数の形式に対応する正規表現例
-    pattern = r"(?:緯度[:：]?\s*)([-\d]+\.\d+)[,、\s]+(?:経度[:：]?\s*)([-\d]+\.\d+)(?:[,、\s]+(?:方向[:：]?\s*([-\d\.]+))?)?(?:[,、\s]+(?:ラベル[:：]?\s*([^\n]+))?)?"
+    pattern = r"(?:緯度[:：]?\s*)([-\d]+\.\d+)[,、\s]+(?:経度[:：]?\s*)([-\d]+\.\d+)(?:[,、\s]+(?:方向[:：]?\s*[-\d\.]+))?(?:[,、\s]+(?:ラベル[:：]?\s*([^\n]+))?)?"
     proposals = re.findall(pattern, response_text)
     results = []
-    for lat_str, lon_str, direction, label in proposals:
+    for lat_str, lon_str, label in proposals:
         try:
             lat = float(lat_str)
             lon = float(lon_str)
             label = label.strip() if label else ""
-            results.append([lat, lon, label])
+            results.append([lat, lon, label, "new"])
         except Exception:
             continue
     return results
 
 def add_speaker_proposals_from_gemini():
     """
-    Gemini の回答内に新規スピーカーの緯度・経度が含まれている場合、
-    それらを抽出して既存のスピーカーリストに追加します。
+    Gemini の回答内に新設の緯度・経度が含まれている場合、
+    それらを抽出して既存のスピーカーリストに追加する。
+    新規に追加されたスピーカーは "new" フラグ付きで保存する。
     """
     if "gemini_result" not in st.session_state or not st.session_state.gemini_result:
         st.error("Gemini API の回答がありません。")
@@ -453,13 +474,18 @@ def main():
         
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
         
-        # スピーカーのマーカー表示
+        # スピーカーのマーカー表示（新規スピーカーは赤、既存は青）
         for spk in st.session_state.speakers:
-            lat, lon, label = spk
+            # "new" フラグが付いている場合は赤色アイコン
+            if len(spk) >= 4 and spk[3] == "new":
+                icon = folium.Icon(color="red", icon="info-sign")
+            else:
+                icon = folium.Icon(color="blue", icon="info-sign")
+            lat, lon, label = spk[0], spk[1], spk[2]
             popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})"
             if label:
                 popup_text += f"<br><b>ラベル</b>: {label}"
-            folium.Marker(location=[lat, lon], popup=folium.Popup(popup_text, max_width=300)).add_to(m)
+            folium.Marker(location=[lat, lon], popup=folium.Popup(popup_text, max_width=300), icon=icon).add_to(m)
         
         # ヒートマップ or 等高線描画
         if display_mode == "HeatMap":
