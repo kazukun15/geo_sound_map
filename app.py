@@ -174,7 +174,7 @@ def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=
         levels = sorted(raw_levels)  # 昇順にする
     sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     
-    # デバッグ用に sound_grid の最小・最大値を表示
+    # デバッグ用: sound_grid の最小・最大値をサイドバーに表示
     st.sidebar.write("sound_grid min:", np.nanmin(sound_grid))
     st.sidebar.write("sound_grid max:", np.nanmax(sound_grid))
     
@@ -184,7 +184,7 @@ def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=
     for level_idx, segs in enumerate(c.allsegs):
         color = colors[level_idx % len(colors)]
         for seg in segs:
-            coords = [[p[1], p[0]] for p in seg]  # Foliumは [lat, lon] の順
+            coords = [[p[1], p[0]] for p in seg]  # Foliumは [lat, lon] 順
             folium.PolyLine(coords, color=color, weight=2).add_to(m)
     plt.close(fig)
 
@@ -193,11 +193,12 @@ def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=
 # ----------------------------------------------------------------
 def generate_gemini_prompt(user_query):
     """
-    ユーザーの問い合わせと現在のスピーカー配置、音圧分布情報を元に改善案を提案するプロンプトを生成する。
+    Gemini へのプロンプトでは、必ず「緯度: 34.255500, 経度: 133.207000」の形式で出力するように指示してください。
+    ユーザーの問い合わせと現在のスピーカー配置、音圧分布情報を元に改善案を提案するプロンプトを生成します。
     条件：
       - 海など設置困難な場所は除外
       - スピーカー同士は300m以上離れていること
-      - 座標表記は「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」で統一
+      - 座標表記は「緯度: 34.255500, 経度: 133.207000」の形式で統一
     """
     speakers = st.session_state.speakers if "speakers" in st.session_state else []
     if speakers:
@@ -214,7 +215,7 @@ def generate_gemini_prompt(user_query):
         "海など設置困難な場所は除外し、スピーカー同士は300m以上離れている場所を考慮してください。\n"
         f"ユーザーの問い合わせ: {user_query}\n"
         "上記情報に基づき、改善案を具体的かつ詳細に提案してください。\n"
-        "【座標表記形式】 緯度 xxx.xxxxxx, 経度 yyy.yyyyyy で統一してください。"
+        "【座標表記形式】 緯度: 34.255500, 経度: 133.207000 で統一してください。"
     )
     return prompt
 
@@ -247,11 +248,20 @@ def call_gemini_api(query):
 # ----------------------------------------------------------------
 def extract_speaker_proposals(response_text):
     """
-    Gemini のレスポンステキストからスピーカー提案を抽出する。
-    例: "## スピーカー増設提案\n緯度 34.254000, 経度 133.208000, 方向 270, ラベル 役場"
-    戻り値は [[lat, lon, label], ...] の形式。
+    Gemini のレスポンステキストからスピーカー提案を抽出する関数です。
+    例として、Gemini の回答に以下のような記述が含まれる場合を想定：
+    
+    **新規スピーカーC:**
+      *   緯度: 34.259000, 経度: 133.201500
+      *   理由: ...
+    **新規スピーカーD:**
+      *   緯度: 34.255500, 経度: 133.207000
+      *   理由: ...
+      
+    この関数は、緯度と経度（および任意のラベル）が含まれていれば抽出し、[[lat, lon, label], ...] の形式で返します。
     """
-    pattern = r"緯度\s*([-\d]+\.\d+)\s*,\s*経度\s*([-\d]+\.\d+)(?:\s*,\s*(?:方向\s*[^\d]*([\d\.]+))?)?(?:\s*,\s*(?:ラベル\s*([^\n]+))?)?"
+    # 複数の形式に対応する正規表現例
+    pattern = r"(?:緯度[:：]?\s*)([-\d]+\.\d+)[,、\s]+(?:経度[:：]?\s*)([-\d]+\.\d+)(?:[,、\s]+(?:方向[:：]?\s*([-\d\.]+))?)?(?:[,、\s]+(?:ラベル[:：]?\s*([^\n]+))?)?"
     proposals = re.findall(pattern, response_text)
     results = []
     for lat_str, lon_str, direction, label in proposals:
@@ -266,7 +276,8 @@ def extract_speaker_proposals(response_text):
 
 def add_speaker_proposals_from_gemini():
     """
-    Gemini の回答に新設の緯度・経度が含まれている場合、それを抽出しスピーカーに追加する。
+    Gemini の回答内に新規スピーカーの緯度・経度が含まれている場合、
+    それらを抽出して既存のスピーカーリストに追加します。
     """
     if "gemini_result" not in st.session_state or not st.session_state.gemini_result:
         st.error("Gemini API の回答がありません。")
@@ -280,7 +291,7 @@ def add_speaker_proposals_from_gemini():
                 st.session_state.speakers.append(proposal)
                 added_count += 1
         if added_count > 0:
-            st.success(f"Gemini の回答から {added_count} 件の新設スピーカー情報を追加しました。")
+            st.success(f"Gemini の回答から {added_count} 件の新規スピーカー情報を追加しました。")
             st.session_state.heatmap_data = None
         else:
             st.info("Gemini の回答から新たなスピーカー情報は見つかりませんでした。")
