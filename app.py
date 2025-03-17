@@ -13,7 +13,7 @@ import streamlit as st
 import pydeck as pdk
 
 # ------------------ 初期設定 ------------------
-st.set_page_config(page_title="愛媛県上島町 全域＋スピーカー方向＆全スピーカー伝搬アニメーション", layout="wide")
+st.set_page_config(page_title="愛媛県上島町 全域＋スピーカー伝搬アニメーション", layout="wide")
 
 CUSTOM_CSS = """
 <style>
@@ -105,7 +105,7 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
         direction_deg = float(spk[3]) if len(spk) >= 4 else 0.0
         dlat = grid_lat - lat_s
         dlon = grid_lon - lon_s
-        distance = np.sqrt((dlat*111320)**2 + (dlon*111320*math.cos(math.radians(lat_s)))**2)
+        distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * math.cos(math.radians(lat_s)))**2)
         distance[distance < 1] = 1
         p_db = L0 - 20 * np.log10(distance)
         # 方向依存補正
@@ -166,7 +166,7 @@ def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
             val = sgrid[i, j]
             if not np.isnan(val):
                 norm = (val - val_min) / (val_max - val_min)
-                elevation = norm * 300.0  # 高さを0～300に
+                elevation = norm * 300.0  # 高さを 0～300 に
                 r = int(255 * norm)
                 g = int(255 * (1 - norm))
                 b = 128
@@ -319,14 +319,13 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
     num_steps = 20
     max_radius = 300  # 最大半径 (m)
     final_deck = None
-    for step in range(1, num_steps+1):
+    for step in range(1, num_steps + 1):
         radius = (step / num_steps) * max_radius
         anim_layers = []
         for spk in speakers:
             circle_geo = create_circle_geojson(spk[0], spk[1], radius)
             effective_radius = radius if radius >= 1 else 1
             p_db = L0 - 20 * math.log10(effective_radius)
-            # 線形補間：L0 => alpha 255, L0-40 => alpha 0
             alpha = int(255 * (p_db - (L0 - 40)) / 40)
             alpha = max(0, min(alpha, 255))
             anim_layer = pdk.Layer(
@@ -346,7 +345,7 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
         container.pydeck_chart(deck)
         time.sleep(0.3)
         final_deck = deck
-    # フェードアウトフェーズ：全スピーカー分を徐々にフェードアウトさせる
+    # フェードアウトフェーズ
     for fade in range(10, -1, -1):
         fade_alpha = int(80 * (fade / 10))
         anim_layers = []
@@ -372,25 +371,16 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
     container.empty()
     return final_deck
 
-# ------------------ アニメーション用: 円形ジオJSON生成 ------------------
-def create_circle_geojson(lat, lon, radius, num_points=50):
-    points = []
-    for i in range(num_points):
-        angle = 2 * math.pi * i / num_points
-        dlat = (radius * math.sin(angle)) / 111320
-        dlon = (radius * math.cos(angle)) / (111320 * math.cos(math.radians(lat)))
-        points.append([lon + dlon, lat + dlat])
-    points.append(points[0])
-    geojson = {
-        "type": "Feature",
-        "geometry": {"type": "Polygon", "coordinates": [points]},
-        "properties": {}
-    }
-    return geojson
+# ------------------ 個別スピーカー伝搬アニメーション用 ------------------
+def animate_individual_propagation(speaker, base_layers, view_state, L0):
+    """
+    選択されたスピーカーのみの音圧伝搬アニメーションを表示する。
+    """
+    return animate_all_propagation([speaker], base_layers, view_state, L0)
 
 # ------------------ メインUI ------------------
 def main():
-    st.title("愛媛県上島町 全域＋スピーカー方向＆全スピーカー伝搬アニメーション")
+    st.title("愛媛県上島町 全域＋スピーカー伝搬アニメーション")
     
     # セッション初期化
     if "map_center" not in st.session_state:
@@ -409,14 +399,14 @@ def main():
         st.session_state.gemini_result = None
     if "edit_index" not in st.session_state:
         st.session_state.edit_index = None
-    if "animate" not in st.session_state:
-        st.session_state.animate = False
     if "animate_all" not in st.session_state:
         st.session_state.animate_all = False
+    if "animate_individual" not in st.session_state:
+        st.session_state.animate_individual = False
     if "selected_index" not in st.session_state:
         st.session_state.selected_index = None
 
-    # サイドバー操作
+    # サイドバー
     with st.sidebar:
         st.header("操作パネル")
         upfile = st.file_uploader("CSVアップロード", type=["csv"])
@@ -473,7 +463,7 @@ def main():
                 new_lat = st.text_input("緯度", value=str(spk[0]))
                 new_lon = st.text_input("経度", value=str(spk[1]))
                 new_lbl = st.text_input("ラベル", value=spk[2])
-                new_dir = st.text_input("方向", value=str(spk[3] if len(spk)>=4 else "0"))
+                new_dir = st.text_input("方向", value=str(spk[3] if len(spk) >= 4 else "0"))
                 if st.form_submit_button("編集保存"):
                     try:
                         latv = float(new_lat)
@@ -505,8 +495,10 @@ def main():
             st.success("Gemini完了")
             add_speaker_proposals_from_gemini()
         
-        # ここで全スピーカーの伝搬アニメーションボタンを追加
+        # ボタンを分ける：個別と全体の伝搬アニメーション
         if st.session_state.speakers:
+            if st.button("個別スピーカー伝搬アニメーション表示"):
+                st.session_state.animate_individual = True
             if st.button("全スピーカー伝搬アニメーション表示"):
                 st.session_state.animate_all = True
 
@@ -520,7 +512,6 @@ def main():
         spk_list.append([s[0], s[1], s[2], flag])
     spk_df = pd.DataFrame(spk_list, columns=["lat", "lon", "label", "flag"])
     spk_df["z"] = 30  # 3Dモデル表示用の高さ
-    # すべてのスピーカーは3Dモデルで表示するので、color設定は ScenegraphLayer 用のみ
     spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x=="new" else [0, 0, 255])
     
     # ------------------ レイヤー作成 ------------------
@@ -571,14 +562,15 @@ def main():
     )
     
     # ------------------ アニメーション処理 ------------------
+    # 優先順位：全体アニメーション > 個別アニメーション
     if st.session_state.get("animate_all", False):
         final_deck = animate_all_propagation(st.session_state.speakers, layers.copy(), view_state, st.session_state.L0)
         st.session_state.animate_all = False
         st.pydeck_chart(final_deck)
-    elif st.session_state.get("animate", False) and st.session_state.selected_index is not None:
+    elif st.session_state.get("animate_individual", False) and st.session_state.selected_index is not None:
         selected_spk = st.session_state.speakers[st.session_state.selected_index]
-        final_deck = animate_propagation(selected_spk, layers.copy(), view_state, st.session_state.L0)
-        st.session_state.animate = False
+        final_deck = animate_individual_propagation(selected_spk, layers.copy(), view_state, st.session_state.L0)
+        st.session_state.animate_individual = False
         st.pydeck_chart(final_deck)
     else:
         st.pydeck_chart(base_deck)
