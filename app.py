@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 # ----------------------------------------
 # 初期設定とカスタムスタイル
 # ----------------------------------------
-st.set_page_config(page_title="防災スピーカー音圧可視化マップ (Pydeck)", layout="wide")
+st.set_page_config(page_title="防災スピーカー音圧可視化マップ (Pydeck 3D Columns)", layout="wide")
 
 CUSTOM_CSS = """
 <style>
@@ -67,7 +67,10 @@ def load_csv(file) -> list:
 
 def export_csv(data) -> bytes:
     """スピーカー情報をCSVに変換（出力カラム: latitude, longitude, label）"""
-    rows = [{"latitude": s[0], "longitude": s[1], "label": s[2]} for s in data if len(s) >= 3]
+    rows = []
+    for entry in data:
+        lat, lon, label = entry[0], entry[1], entry[2]
+        rows.append({"latitude": lat, "longitude": lon, "label": label})
     df = pd.DataFrame(rows, columns=["latitude", "longitude", "label"])
     buffer = io.StringIO()
     df.to_csv(buffer, index=False)
@@ -98,7 +101,7 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     sound_grid[valid] = 10 * np.log10(power_sum[valid])
     return sound_grid
 
-def generate_grid(center, delta=0.01, resolution=60):
+def generate_grid(center, delta=0.01, resolution=100):
     """中心座標とdeltaからグリッド (grid_lat, grid_lon) を生成"""
     lat, lon = center
     lat_min, lat_max = lat - delta, lat + delta
@@ -107,61 +110,52 @@ def generate_grid(center, delta=0.01, resolution=60):
         np.linspace(lat_min, lat_max, resolution),
         np.linspace(lon_min, lon_max, resolution)
     )
-    # 転置して shape を (resolution, resolution) に
+    # shape を (resolution, resolution) にするため転置
     return grid_lat.T, grid_lon.T
 
-def calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
-    """音圧分布データ(DataFrame)を生成。カラム: latitude, longitude, weight"""
-    sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
-    Nx, Ny = grid_lat.shape
-    data = []
-    for i in range(Nx):
-        for j in range(Ny):
-            val = sound_grid[i, j]
-            if not np.isnan(val):
-                data.append({"latitude": grid_lat[i, j], "longitude": grid_lon[i, j], "weight": val})
-    return pd.DataFrame(data)
-
-@st.cache_data(show_spinner=False)
-def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
-    return calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon)
-
-def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
-    """3D ColumnLayer 用に、各グリッド点の音圧値、正規化・高さ、色データをDataFrame化する"""
+def get_column_data(speakers, L0, r_max, grid_lat, grid_lon):
+    """
+    3D ColumnLayer 用に、各グリッド点の音圧値・高さ・色(RGBA)を DataFrame 化する。
+    """
     sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     Nx, Ny = grid_lat.shape
     data_list = []
     try:
         val_min = np.nanmin(sound_grid)
         val_max = np.nanmax(sound_grid)
-    except Exception:
+        if math.isnan(val_min) or val_min == val_max:
+            return pd.DataFrame()
+    except:
         return pd.DataFrame()
-    if math.isnan(val_min) or val_min == val_max:
-        return pd.DataFrame()
+    
     for i in range(Nx):
         for j in range(Ny):
             val = sound_grid[i, j]
             if not np.isnan(val):
+                # 0～1 に正規化
                 norm = (val - val_min) / (val_max - val_min)
-                elevation = norm * 1000.0  # 調整可能な高さスケール
-                # 色: norm=0 -> 青, norm=1 -> 赤 (Gは逆)
+                # 高さ
+                elevation = norm * 1000.0  # スケール調整
+                # 色 (弱=青, 強=赤) + alpha
+                # norm=0 => [0,0,255,80], norm=1 => [255,0,0,80]
                 r = int(255 * norm)
-                g = int(255 * (1 - norm))
-                b = 128
+                g = 0
+                b = int(255 * (1 - norm))
+                a = 100  # 透過度
+                color = [r, g, b, a]
                 data_list.append({
                     "lat": grid_lat[i, j],
                     "lon": grid_lon[i, j],
                     "value": val,
                     "elevation": elevation,
-                    "color": [r, g, b]
+                    "color": color
                 })
     return pd.DataFrame(data_list)
 
 # ----------------------------------------
-# Gemini API 連携関連
+# Gemini API 関連
 # ----------------------------------------
 def generate_gemini_prompt(user_query):
-    """Gemini へのプロンプトを生成。座標表記は「緯度: 34.255500, 経度: 133.207000」で統一するよう指示"""
     speakers = st.session_state.speakers if "speakers" in st.session_state else []
     if speakers:
         speaker_info = "\n".join(
@@ -182,7 +176,6 @@ def generate_gemini_prompt(user_query):
     return prompt
 
 def call_gemini_api(query):
-    """Gemini API へクエリを送信して回答テキストを返す"""
     headers = {"Content-Type": "application/json"}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
     payload = {"contents": [{"parts": [{"text": query}]}]}
@@ -207,10 +200,6 @@ def call_gemini_api(query):
         return f"エラー: {e}"
 
 def extract_speaker_proposals(response_text):
-    """
-    Gemini の回答からスピーカー提案（新規）を抽出する。
-    戻り値は [[lat, lon, label, "new"], ...] の形式。
-    """
     pattern = r"(?:緯度[:：]?\s*)([-\d]+\.\d+)[,、\s]+(?:経度[:：]?\s*)([-\d]+\.\d+)(?:[,、\s]+(?:方向[:：]?\s*[-\d\.]+))?(?:[,、\s]+(?:ラベル[:：]?\s*([^\n]+))?)?"
     proposals = re.findall(pattern, response_text)
     results = []
@@ -225,7 +214,6 @@ def extract_speaker_proposals(response_text):
     return results
 
 def add_speaker_proposals_from_gemini():
-    """Gemini の回答に含まれる新規スピーカーを抽出して追加する"""
     if "gemini_result" not in st.session_state or not st.session_state.gemini_result:
         st.error("Gemini API の回答がありません。")
         return
@@ -246,13 +234,9 @@ def add_speaker_proposals_from_gemini():
         st.info("Gemini の回答からスピーカー情報の抽出に失敗しました。")
 
 # ----------------------------------------
-# キャッシュ設定とスレッドプール
+# ThreadPoolExecutor
 # ----------------------------------------
 executor = ThreadPoolExecutor(max_workers=2)
-
-@st.cache_data(show_spinner=False)
-def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
-    return calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon)
 
 # ----------------------------------------
 # Pydeck レイヤー作成
@@ -269,20 +253,8 @@ def create_scatter_layer(spk_df):
         auto_highlight=True,
     )
 
-def create_heatmap_layer(heat_df):
-    """HeatmapLayer の作成。透明度を高めに設定"""
-    return pdk.Layer(
-        "HeatmapLayer",
-        data=heat_df,
-        get_position=["longitude", "latitude"],
-        get_weight="weight",
-        radiusPixels=50,
-        min_opacity=0.1,
-        max_opacity=0.3,
-    )
-
 def create_column_layer(col_df):
-    """3Dカラム表示用の ColumnLayer の作成"""
+    """3Dカラム表示用の ColumnLayer の作成 (高さ+色)"""
     return pdk.Layer(
         "ColumnLayer",
         data=col_df,
@@ -290,7 +262,7 @@ def create_column_layer(col_df):
         get_elevation="elevation",
         elevation_scale=1,
         radius=30,
-        get_fill_color="color",
+        get_fill_color="color",  # RGBA
         pickable=True,
         auto_highlight=True,
     )
@@ -299,9 +271,9 @@ def create_column_layer(col_df):
 # Main UI
 # ----------------------------------------
 def main():
-    st.title("防災スピーカー音圧可視化マップ")
+    st.title("防災スピーカー音圧可視化 - Pydeck 3D Columns")
     
-    # セッション初期化（中心、ズーム、スピーカー、パラメータ）
+    # セッション初期化
     if "map_center" not in st.session_state:
         st.session_state.map_center = [34.25741795269067, 133.20450105700033]
     if "map_zoom" not in st.session_state:
@@ -321,11 +293,10 @@ def main():
         st.session_state.gemini_result = None
     if "edit_index" not in st.session_state:
         st.session_state.edit_index = None
-
+    
     # ---------- サイドバー ----------
     with st.sidebar:
         st.header("操作パネル")
-        # CSVアップロード
         uploaded_file = st.file_uploader("CSVファイルをアップロード", type=["csv"])
         if uploaded_file and st.button("CSVからスピーカー登録"):
             new_speakers = load_csv(uploaded_file)
@@ -335,8 +306,8 @@ def main():
                 st.success(f"CSVから {len(new_speakers)} 件のスピーカー情報を追加しました。")
             else:
                 st.error("CSVに正しいデータが見つかりませんでした。")
-        # 手動追加
-        new_speaker = st.text_input("スピーカー追加 (latitude,longitude,label)", placeholder="例: 34.2579,133.2072,役場")
+        
+        new_speaker = st.text_input("スピーカー追加 (lat,lon,label)", placeholder="例: 34.2579,133.2072,役場")
         if st.button("スピーカー追加"):
             parts = new_speaker.split(",")
             if len(parts) < 2:
@@ -351,13 +322,13 @@ def main():
                     st.success(f"スピーカー追加成功: 緯度 {lat}, 経度 {lon}, ラベル: {label}")
                 except Exception as e:
                     st.error(f"スピーカー追加エラー: {e}")
-        # 削除・編集
+        
         if st.session_state.speakers:
             options = [f"{i}: ({s[0]:.6f}, {s[1]:.6f}) - {s[2]}" for i, s in enumerate(st.session_state.speakers)]
             selected = st.selectbox("スピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
             col_del, col_edit = st.columns(2)
             with col_del:
-                if st.button("選択したスピーカーを削除"):
+                if st.button("選択削除"):
                     try:
                         del st.session_state.speakers[selected]
                         st.session_state.heatmap_data = None
@@ -365,11 +336,12 @@ def main():
                     except Exception as e:
                         st.error(f"削除エラー: {e}")
             with col_edit:
-                if st.button("選択したスピーカーを編集"):
+                if st.button("選択編集"):
                     st.session_state.edit_index = selected
         else:
             st.info("スピーカーがありません。")
-        if st.session_state.get("edit_index") is not None:
+        
+        if st.session_state.edit_index is not None:
             with st.form("edit_form"):
                 spk = st.session_state.speakers[st.session_state.edit_index]
                 new_lat = st.text_input("新しい緯度", value=str(spk[0]))
@@ -385,18 +357,19 @@ def main():
                         st.session_state.edit_index = None
                     except Exception as e:
                         st.error(f"編集保存エラー: {e}")
+        
         if st.button("スピーカーリセット"):
             st.session_state.speakers = []
             st.session_state.heatmap_data = None
             st.success("スピーカーをリセットしました")
+        
         # パラメータ調整
         st.session_state.L0 = st.slider("初期音圧レベル (dB)", 50, 100, st.session_state.L0)
         st.session_state.r_max = st.slider("最大伝播距離 (m)", 100, 2000, st.session_state.r_max)
-        # 表示モード選択: "HeatMap" または "3D Columns"
-        display_mode = st.radio("表示モードを選択", ["HeatMap", "3D Columns"])
+        
         # Gemini API
         st.subheader("Gemini API 呼び出し")
-        gemini_query = st.text_input("Gemini に問い合わせる内容")
+        gemini_query = st.text_input("問い合わせ内容")
         if st.button("Gemini API を実行"):
             prompt = generate_gemini_prompt(gemini_query)
             result = call_gemini_api(prompt)
@@ -404,41 +377,24 @@ def main():
             st.success("Gemini API 実行完了")
             add_speaker_proposals_from_gemini()
     
-    # ---------- グリッド生成 ----------
-    grid_lat, grid_lon = generate_grid(st.session_state.map_center, delta=0.01, resolution=60)
+    # ---------- グリッド生成 (中心 ±0.01度, 100x100の解像度) ----------
+    grid_lat, grid_lon = generate_grid(st.session_state.map_center, delta=0.01, resolution=100)
     
-    # ---------- Pydeck 用スピーカー DataFrame ----------
+    # ---------- Pydeck用スピーカー DataFrame ----------
+    # 新規スピーカー("new")は赤、それ以外は青
     spk_list = []
     for s in st.session_state.speakers:
         flag = s[3] if len(s) >= 4 else ""
         spk_list.append([s[0], s[1], s[2], flag])
     spk_df = pd.DataFrame(spk_list, columns=["lat", "lon", "label", "flag"])
-    spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x == "new" else [0, 0, 255])
+    def color_func(f):
+        return [255, 0, 0] if f == "new" else [0, 0, 255]
+    spk_df["color"] = spk_df["flag"].apply(color_func)
     
-    layers = []
-    if display_mode == "HeatMap":
-        if st.session_state.heatmap_data is None:
-            st.session_state.heatmap_data = cached_calculate_heatmap(
-                st.session_state.speakers, st.session_state.L0, st.session_state.r_max, grid_lat, grid_lon
-            )
-        if not st.session_state.heatmap_data.empty:
-            heatmap_layer = create_heatmap_layer(st.session_state.heatmap_data)
-            layers.append(heatmap_layer)
-        else:
-            st.info("ヒートマップデータが空です。")
-        scatter_layer = create_scatter_layer(spk_df)
-        layers.append(scatter_layer)
-    else:
-        col_df = get_column_data(grid_lat, grid_lon, st.session_state.speakers, st.session_state.L0, st.session_state.r_max)
-        if col_df.empty:
-            st.info("3Dカラム用データが空です。")
-        else:
-            column_layer = create_column_layer(col_df)
-            layers.append(column_layer)
-        scatter_layer = create_scatter_layer(spk_df)
-        layers.append(scatter_layer)
+    # ---------- 3Dカラム表示 (ColumnLayer) ----------
+    col_df = get_column_data(st.session_state.speakers, st.session_state.L0, st.session_state.r_max, grid_lat, grid_lon)
     
-    # ---------- 全体音圧範囲の計算表示 ----------
+    # 全体音圧範囲
     try:
         sound_grid = compute_sound_grid(st.session_state.speakers, st.session_state.L0, st.session_state.r_max, grid_lat, grid_lon)
         dB_min = np.nanmin(sound_grid)
@@ -447,32 +403,42 @@ def main():
     except Exception:
         st.write("音圧範囲の計算に失敗しました。")
     
+    # ColumnLayer
+    if col_df.empty:
+        st.info("3Dカラム用データが空です。（音圧がすべてNaNか同値の可能性）")
+        layers = []
+    else:
+        column_layer = create_column_layer(col_df)
+        scatter_layer = create_scatter_layer(spk_df)
+        layers = [column_layer, scatter_layer]
+    
+    # Pydeck デッキ作成
     if layers:
         view_state = pdk.ViewState(
             latitude=st.session_state.map_center[0],
             longitude=st.session_state.map_center[1],
             zoom=st.session_state.map_zoom,
-            pitch=45 if display_mode=="3D Columns" else 0,
-            bearing=0,
+            pitch=60,  # 3D感を出す
+            bearing=-45,
         )
         deck = pdk.Deck(
             layers=layers,
             initial_view_state=view_state,
-            tooltip={"text": "{label}\n音圧: {value}"}
+            tooltip={"text": "{label}\n音圧: {value} dB"},
+            map_style="mapbox://styles/mapbox/dark-v10",  # 地図が見やすいダークスタイル
         )
         st.pydeck_chart(deck)
     else:
         st.write("表示するレイヤーがありません。")
     
+    # CSVダウンロード
     csv_data = export_csv(st.session_state.speakers)
     st.download_button("スピーカーCSVダウンロード", csv_data, "speakers.csv", "text/csv")
     
+    # デバッグ情報
     with st.expander("デバッグ・テスト情報"):
         st.write("スピーカー情報:", st.session_state.speakers)
-        if st.session_state.heatmap_data is not None:
-            st.write("ヒートマップデータ件数:", len(st.session_state.heatmap_data))
-        st.write("表示モード:", display_mode)
-        st.write("L0:", st.session_state.L0, "r_max:", st.session_state.r_max)
+        st.write(f"L0: {st.session_state.L0}, r_max: {st.session_state.r_max}")
     
     st.markdown("---")
     st.subheader("Gemini API の回答（テキスト表示）")
@@ -481,6 +447,9 @@ def main():
     else:
         st.info("Gemini API の回答はまだありません。")
 
+# ----------------------------------------
+# 実行
+# ----------------------------------------
 if __name__ == "__main__":
     try:
         main()
