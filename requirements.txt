@@ -5,5 +5,5 @@ numpy
 pandas
 branca
 requests
-rasterio
-GDAL
+rasterio==1.2.10
+GDAL==3.4.1
