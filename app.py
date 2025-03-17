@@ -348,7 +348,7 @@ def animate_propagation(speaker, base_layers, view_state):
         )
         container.pydeck_chart(deck)
         time.sleep(0.3)
-    # フェードアウトフェーズ：アルファ値を徐々に下げる
+    # フェードアウトフェーズ：徐々にアルファ値を下げる
     for fade in range(10, -1, -1):
         alpha = int(80 * (fade / 10))
         circle_geo = create_circle_geojson(speaker[0], speaker[1], max_radius)
@@ -367,7 +367,9 @@ def animate_propagation(speaker, base_layers, view_state):
         )
         container.pydeck_chart(deck)
         time.sleep(0.2)
-    container.empty()
+    # 最終状態の deck を返す（リフレッシュせずそのまま残す）
+    final_deck = deck
+    return final_deck
 
 # ------------------ メインUI ------------------
 def main():
@@ -453,7 +455,7 @@ def main():
                 new_lat = st.text_input("緯度", value=str(spk[0]))
                 new_lon = st.text_input("経度", value=str(spk[1]))
                 new_lbl = st.text_input("ラベル", value=spk[2])
-                new_dir = st.text_input("方向", value=str(spk[3] if len(spk) >= 4 else "0"))
+                new_dir = st.text_input("方向", value=str(spk[3] if len(spk)>=4 else "0"))
                 if st.form_submit_button("編集保存"):
                     try:
                         latv = float(new_lat)
@@ -525,7 +527,7 @@ def main():
         scatter_layer = create_scatter_layer(spk_df)
         layers.append(scatter_layer)
     
-    # スピーカー 3Dモデル (ScenegraphLayer) を追加（カラムより上に表示）
+    # すべてのスピーカーを 3Dモデルで表示 (ScenegraphLayer)
     speaker_3d_layer = create_speaker_3d_layer(spk_df)
     layers.append(speaker_3d_layer)
     
@@ -555,11 +557,12 @@ def main():
     # ------------------ アニメーション処理 ------------------
     if st.session_state.get("animate", False) and st.session_state.selected_index is not None:
         selected_spk = st.session_state.speakers[st.session_state.selected_index]
-        base_layers = layers.copy()
-        animate_propagation(selected_spk, base_layers, view_state)
+        # Animate and obtain final deck (without clearing the view)
+        final_deck = animate_propagation(selected_spk, layers.copy(), view_state)
         st.session_state.animate = False
-    
-    st.pydeck_chart(base_deck)
+        st.pydeck_chart(final_deck)
+    else:
+        st.pydeck_chart(base_deck)
     
     # ------------------ CSV ダウンロード ------------------
     csv_data = export_csv(st.session_state.speakers)
