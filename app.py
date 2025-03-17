@@ -13,7 +13,7 @@ import streamlit as st
 import pydeck as pdk
 
 # ------------------ 初期設定 ------------------
-st.set_page_config(page_title="愛媛県上島町 全域＋スピーカー方向＆音圧伝搬アニメーション", layout="wide")
+st.set_page_config(page_title="愛媛県上島町 全域＋スピーカー方向＆全スピーカー伝搬アニメーション", layout="wide")
 
 CUSTOM_CSS = """
 <style>
@@ -95,7 +95,7 @@ def export_csv(data):
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
     各スピーカーからの音圧 (dB) を計算する。
-    方向情報により、グリッド点への角度差のコサイン補正（最低 0.3倍）を掛ける。
+    方向情報により、グリッド点への角度差のコサイン補正（最低0.3倍）を掛ける。
     結果は (L0-40) ～ L0 にクリップされる。
     """
     Nx, Ny = grid_lat.shape
@@ -105,7 +105,7 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
         direction_deg = float(spk[3]) if len(spk) >= 4 else 0.0
         dlat = grid_lat - lat_s
         dlon = grid_lon - lon_s
-        distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * math.cos(math.radians(lat_s)))**2)
+        distance = np.sqrt((dlat*111320)**2 + (dlon*111320*math.cos(math.radians(lat_s)))**2)
         distance[distance < 1] = 1
         p_db = L0 - 20 * np.log10(distance)
         # 方向依存補正
@@ -247,7 +247,7 @@ def add_speaker_proposals_from_gemini():
     if proposals:
         added = 0
         for p in proposals:
-            if not any(abs(p[0]-s[0])<1e-6 and abs(p[1]-s[1])<1e-6 for s in st.session_state.speakers):
+            if not any(abs(p[0]-s[0]) < 1e-6 and abs(p[1]-s[1]) < 1e-6 for s in st.session_state.speakers):
                 st.session_state.speakers.append(p)
                 added += 1
         if added > 0:
@@ -308,7 +308,71 @@ def create_column_layer(col_df):
         auto_highlight=True,
     )
 
-# ------------------ アニメーション用 ------------------
+# ------------------ 全スピーカー伝搬アニメーション用 ------------------
+def animate_all_propagation(speakers, base_layers, view_state, L0):
+    """
+    全スピーカーからの音圧伝搬アニメーションを同時に表示する。
+    各スピーカーについて、現在の半径に応じた透明度を計算して円を表示し、
+    最終状態（全てのスピーカーからの伝搬円が表示された状態）を維持する。
+    """
+    container = st.empty()
+    num_steps = 20
+    max_radius = 300  # 最大半径 (m)
+    final_deck = None
+    for step in range(1, num_steps+1):
+        radius = (step / num_steps) * max_radius
+        anim_layers = []
+        for spk in speakers:
+            circle_geo = create_circle_geojson(spk[0], spk[1], radius)
+            effective_radius = radius if radius >= 1 else 1
+            p_db = L0 - 20 * math.log10(effective_radius)
+            # 線形補間：L0 => alpha 255, L0-40 => alpha 0
+            alpha = int(255 * (p_db - (L0 - 40)) / 40)
+            alpha = max(0, min(alpha, 255))
+            anim_layer = pdk.Layer(
+                "GeoJsonLayer",
+                data=circle_geo,
+                get_fill_color=[255, 0, 0, alpha],
+                get_line_color=[255, 0, 0],
+                line_width_min_pixels=2,
+            )
+            anim_layers.append(anim_layer)
+        current_layers = base_layers + anim_layers
+        deck = pdk.Deck(
+            layers=current_layers,
+            initial_view_state=view_state,
+            tooltip={"text": "{label}\n方向: {flag}\n音圧: {value}"}
+        )
+        container.pydeck_chart(deck)
+        time.sleep(0.3)
+        final_deck = deck
+    # フェードアウトフェーズ：全スピーカー分を徐々にフェードアウトさせる
+    for fade in range(10, -1, -1):
+        fade_alpha = int(80 * (fade / 10))
+        anim_layers = []
+        for spk in speakers:
+            circle_geo = create_circle_geojson(spk[0], spk[1], max_radius)
+            anim_layer = pdk.Layer(
+                "GeoJsonLayer",
+                data=circle_geo,
+                get_fill_color=[255, 0, 0, fade_alpha],
+                get_line_color=[255, 0, 0],
+                line_width_min_pixels=2,
+            )
+            anim_layers.append(anim_layer)
+        current_layers = base_layers + anim_layers
+        deck = pdk.Deck(
+            layers=current_layers,
+            initial_view_state=view_state,
+            tooltip={"text": "{label}\n方向: {flag}\n音圧: {value}"}
+        )
+        container.pydeck_chart(deck)
+        time.sleep(0.2)
+        final_deck = deck
+    container.empty()
+    return final_deck
+
+# ------------------ アニメーション用: 円形ジオJSON生成 ------------------
 def create_circle_geojson(lat, lon, radius, num_points=50):
     points = []
     for i in range(num_points):
@@ -324,48 +388,9 @@ def create_circle_geojson(lat, lon, radius, num_points=50):
     }
     return geojson
 
-def animate_propagation(speaker, base_layers, view_state, L0):
-    """
-    伝搬アニメーション：選択したスピーカーからの音圧伝搬を、音圧に応じて
-    現在の半径 r に対し p_db = L0 - 20*log10(r) を計算し、その値に応じた透明度で円を表示します。
-    アニメーション終了後、最後の状態をそのまま表示します。
-    """
-    container = st.empty()
-    num_steps = 20
-    max_radius = 300  # 最大半径 (m)
-    final_deck = None
-    for step in range(1, num_steps + 1):
-        radius = (step / num_steps) * max_radius
-        # 計算: 音圧 (dB) = L0 - 20 * log10(radius)
-        effective_radius = radius if radius >= 1 else 1
-        p_db = L0 - 20 * math.log10(effective_radius)
-        # 0～40 dBの範囲で補間（L0: 最大, L0-40: 最小）
-        alpha = int(255 * (p_db - (L0 - 40)) / 40)
-        alpha = max(0, min(alpha, 255))
-        circle_geo = create_circle_geojson(speaker[0], speaker[1], radius)
-        anim_layer = pdk.Layer(
-            "GeoJsonLayer",
-            data=circle_geo,
-            get_fill_color=[255, 0, 0, alpha],
-            get_line_color=[255, 0, 0],
-            line_width_min_pixels=2,
-        )
-        current_layers = base_layers + [anim_layer]
-        deck = pdk.Deck(
-            layers=current_layers,
-            initial_view_state=view_state,
-            tooltip={"text": "{label}\n方向: {dir_deg}\n音圧: {value}"}
-        )
-        container.pydeck_chart(deck)
-        time.sleep(0.3)
-        final_deck = deck
-    # 最終状態を維持
-    container.empty()
-    return final_deck
-
 # ------------------ メインUI ------------------
 def main():
-    st.title("愛媛県上島町 全域＋スピーカー方向＆音圧伝搬アニメーション")
+    st.title("愛媛県上島町 全域＋スピーカー方向＆全スピーカー伝搬アニメーション")
     
     # セッション初期化
     if "map_center" not in st.session_state:
@@ -386,10 +411,12 @@ def main():
         st.session_state.edit_index = None
     if "animate" not in st.session_state:
         st.session_state.animate = False
+    if "animate_all" not in st.session_state:
+        st.session_state.animate_all = False
     if "selected_index" not in st.session_state:
         st.session_state.selected_index = None
 
-    # サイドバー
+    # サイドバー操作
     with st.sidebar:
         st.header("操作パネル")
         upfile = st.file_uploader("CSVアップロード", type=["csv"])
@@ -446,7 +473,7 @@ def main():
                 new_lat = st.text_input("緯度", value=str(spk[0]))
                 new_lon = st.text_input("経度", value=str(spk[1]))
                 new_lbl = st.text_input("ラベル", value=spk[2])
-                new_dir = st.text_input("方向", value=str(spk[3] if len(spk) >= 4 else "0"))
+                new_dir = st.text_input("方向", value=str(spk[3] if len(spk)>=4 else "0"))
                 if st.form_submit_button("編集保存"):
                     try:
                         latv = float(new_lat)
@@ -478,9 +505,10 @@ def main():
             st.success("Gemini完了")
             add_speaker_proposals_from_gemini()
         
+        # ここで全スピーカーの伝搬アニメーションボタンを追加
         if st.session_state.speakers:
-            if st.button("音圧伝搬アニメーション表示"):
-                st.session_state.animate = True
+            if st.button("全スピーカー伝搬アニメーション表示"):
+                st.session_state.animate_all = True
 
     # ------------------ グリッド生成 ------------------
     grid_lat, grid_lon = generate_grid_for_kamijima(resolution=80)
@@ -491,8 +519,8 @@ def main():
         flag = s[3] if len(s) >= 4 else ""
         spk_list.append([s[0], s[1], s[2], flag])
     spk_df = pd.DataFrame(spk_list, columns=["lat", "lon", "label", "flag"])
-    spk_df["z"] = 30  # 3Dモデル表示用
-    # 初期スピーカーは常に 3D モデルで表示（scatter_layer は使用しない）
+    spk_df["z"] = 30  # 3Dモデル表示用の高さ
+    # すべてのスピーカーは3Dモデルで表示するので、color設定は ScenegraphLayer 用のみ
     spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x=="new" else [0, 0, 255])
     
     # ------------------ レイヤー作成 ------------------
@@ -515,7 +543,7 @@ def main():
         else:
             st.info("3Dカラムデータが空です。")
     
-    # すべてのスピーカーを 3Dモデルで表示 (ScenegraphLayer)
+    # スピーカーは常に ScenegraphLayer で立体表示
     speaker_3d_layer = create_speaker_3d_layer(spk_df)
     layers.append(speaker_3d_layer)
     
@@ -543,11 +571,13 @@ def main():
     )
     
     # ------------------ アニメーション処理 ------------------
-    if st.session_state.get("animate", False) and st.session_state.selected_index is not None:
+    if st.session_state.get("animate_all", False):
+        final_deck = animate_all_propagation(st.session_state.speakers, layers.copy(), view_state, st.session_state.L0)
+        st.session_state.animate_all = False
+        st.pydeck_chart(final_deck)
+    elif st.session_state.get("animate", False) and st.session_state.selected_index is not None:
         selected_spk = st.session_state.speakers[st.session_state.selected_index]
-        base_layers = layers.copy()
-        # アニメーションは音圧に応じた alpha 値を計算して表示、最終状態を維持
-        final_deck = animate_propagation(selected_spk, base_layers, view_state, st.session_state.L0)
+        final_deck = animate_propagation(selected_spk, layers.copy(), view_state, st.session_state.L0)
         st.session_state.animate = False
         st.pydeck_chart(final_deck)
     else:
