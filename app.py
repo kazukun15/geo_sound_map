@@ -162,36 +162,30 @@ def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
 # ----------------------------------------------------------------
 def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=None):
     """
-    ヒートマップの代わりに、コンターライン（等高線）を Folium 上に表示する例。
+    コンターライン（等高線）を Folium 上に表示する。
     1. compute_sound_grid で音圧を計算
-    2. matplotlib の contour を用いて線分を取得
-    3. Folium PolyLine で地図上に描画
+    2. matplotlib の contour で線分を取得
+    3. Folium PolyLine として追加
     """
     if levels is None:
-        # 例として、4つのレベルに区切る
-        # L0 が80dBの場合、[70, 60, 50, 40]あたり
-        # 必要に応じて調整してください
-        levels = [L0 - 10, L0 - 20, L0 - 30, L0 - 40]
-
+        # 例: L0=80dBの場合 [40, 50, 60, 70] のように昇順に
+        raw_levels = [L0 - 40, L0 - 30, L0 - 20, L0 - 10]
+        # ソートして昇順にする
+        levels = sorted(raw_levels)
+    
     sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     
-    # matplotlib で contour を計算する
     fig, ax = plt.subplots()
-    # grid_lon, grid_lat は 2D配列
-    # contour の引数は (X, Y, Z) の順で X=lon, Y=lat とする場合は
-    #    c = ax.contour(grid_lon, grid_lat, sound_grid, levels=levels)
-    # しかし lat-lon の順序で引数にするなら (grid_lat, grid_lon, sound_grid)
-    # ここでは x=lon, y=lat として contour する例
+    # grid_lon, grid_lat, sound_grid の順で contour する
+    # levels は必ず昇順にする
     c = ax.contour(grid_lon, grid_lat, sound_grid, levels=levels)
     
-    # c.allsegs[i] はレベル i に対する線分のリスト
-    # seg は Nx2 の配列で [x, y] = [lon, lat]
     colors = ["red", "blue", "green", "purple", "orange"]
     for level_idx, level_segs in enumerate(c.allsegs):
         color = colors[level_idx % len(colors)]
         for seg in level_segs:
             # seg: Nx2 -> [ [lon1, lat1], [lon2, lat2], ... ]
-            # Folium では lat-lon の順序が必要
+            # Folium では [lat, lon] の順序が必要
             coords = [[p[1], p[0]] for p in seg]
             folium.PolyLine(coords, color=color, weight=2).add_to(m)
     
@@ -422,7 +416,6 @@ def main():
             np.linspace(lon_min, lon_max, 100)
         )
         
-        # ヒートマップ or コンターライン計算
         if display_mode == "HeatMap":
             if st.session_state.heatmap_data is None:
                 st.session_state.heatmap_data = cached_calculate_heatmap(
@@ -433,11 +426,9 @@ def main():
                     grid_lon
                 )
         else:
-            # コンターラインの場合は特にキャッシュを使わず毎回計算
-            # （キャッシュしてもOKです）
+            # 等高線表示の場合、毎回再計算
             st.session_state.heatmap_data = None
         
-        # Folium地図作成
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
         
         # スピーカーをマーカーで表示
@@ -480,35 +471,6 @@ def main():
         st.text(st.session_state.gemini_result)
     else:
         st.info("Gemini API の回答はまだありません。")
-
-# ----------------------------------------------------------------
-# コンターライン描画関数
-# ----------------------------------------------------------------
-def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=None):
-    """
-    コンターライン（等高線）を Folium 上に表示する。
-    1. compute_sound_grid で音圧を計算
-    2. matplotlib の contour で線分を取得
-    3. Folium PolyLine として追加
-    """
-    if levels is None:
-        # 例: 4つのレベル
-        levels = [L0 - 10, L0 - 20, L0 - 30, L0 - 40]
-    
-    sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
-    
-    fig, ax = plt.subplots()
-    # grid_lon, grid_lat, sound_grid の順で contour する
-    c = ax.contour(grid_lon, grid_lat, sound_grid, levels=levels)
-    
-    colors = ["red", "blue", "green", "purple", "orange"]
-    for level_idx, level_segs in enumerate(c.allsegs):
-        color = colors[level_idx % len(colors)]
-        for seg in level_segs:
-            coords = [[p[1], p[0]] for p in seg]  # Foliumは [lat, lon] 順
-            folium.PolyLine(coords, color=color, weight=2).add_to(m)
-    
-    plt.close(fig)  # 不要な図を閉じる
 
 if __name__ == "__main__":
     try:
