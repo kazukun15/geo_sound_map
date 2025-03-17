@@ -33,7 +33,7 @@ div.stButton > button:hover { background-color: #45a049; }
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ------------------ API設定 ------------------
-API_KEY = st.secrets["general"]["api_key"]
+API_KEY = st.secrets["general"]["api_key"]  # secrets.toml の [general] に設定
 MODEL_NAME = "gemini-2.0-flash"
 
 # ------------------ 方向文字列 → 度数変換 ------------------
@@ -82,7 +82,7 @@ def load_csv(file):
         return []
 
 def export_csv(data):
-    """スピーカー情報をCSV形式に変換（方向は出力しない）"""
+    """スピーカー情報をCSV形式に変換（directionは出力しない）"""
     rows = []
     for s in data:
         lat, lon, label = s[0], s[1], s[2]
@@ -96,7 +96,7 @@ def export_csv(data):
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
     各スピーカーからの音圧(dB)を計算する。
-    方向情報により、グリッド点への角度差に基づくコサイン補正（最低0.3倍）を掛ける。
+    方向情報により、グリッド点への角度差のコサイン補正（最低0.3倍）を掛ける。
     結果は (L0-40)～L0 にクリップされる。
     """
     Nx, Ny = grid_lat.shape
@@ -109,6 +109,7 @@ def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
         distance = np.sqrt((dlat*111320)**2 + (dlon*111320*math.cos(math.radians(lat_s)))**2)
         distance[distance < 1] = 1
         p_db = L0 - 20 * np.log10(distance)
+        # 方向依存補正
         bearing = (np.degrees(np.arctan2(dlon, dlat))) % 360
         angle_diff = np.abs(bearing - direction_deg)
         angle_diff = np.minimum(angle_diff, 360 - angle_diff)
@@ -148,6 +149,10 @@ def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
     return calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon)
 
 def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
+    """
+    ColumnLayer用データ生成：
+    音圧を正規化し、高さを 0～300 に、色は弱→青、強→赤（半透明）に設定。
+    """
     sgrid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
     if np.all(np.isnan(sgrid)):
         return pd.DataFrame()
@@ -162,7 +167,7 @@ def get_column_data(grid_lat, grid_lon, speakers, L0, r_max):
             val = sgrid[i, j]
             if not np.isnan(val):
                 norm = (val - val_min) / (val_max - val_min)
-                elevation = norm * 100.0  # 高さは 0～100 に抑える
+                elevation = norm * 300.0  # 高さを0～300に
                 r = int(255 * norm)
                 g = int(255 * (1 - norm))
                 b = 128
@@ -257,7 +262,7 @@ def add_speaker_proposals_from_gemini():
 # ------------------ ScenegraphLayer (3Dスピーカー) ------------------
 def create_speaker_3d_layer(spk_df):
     SCENEGRAPH_URL = "https://raw.githubusercontent.com/visgl/deck.gl-data/master/scenegraph/airplane/scene.gltf"
-    spk_df["z"] = 30  # 3Dモデルを上に浮かせる
+    spk_df["z"] = 30
     return pdk.Layer(
         "ScenegraphLayer",
         data=spk_df,
@@ -324,6 +329,7 @@ def animate_propagation(speaker, base_layers, view_state):
     container = st.empty()
     num_steps = 20
     max_radius = 300  # 最大半径 (m)
+    # 拡大フェーズ
     for step in range(1, num_steps+1):
         radius = (step / num_steps) * max_radius
         circle_geo = create_circle_geojson(speaker[0], speaker[1], radius)
@@ -342,6 +348,25 @@ def animate_propagation(speaker, base_layers, view_state):
         )
         container.pydeck_chart(deck)
         time.sleep(0.3)
+    # フェードアウトフェーズ：アルファ値を徐々に下げる
+    for fade in range(10, -1, -1):
+        alpha = int(80 * (fade / 10))
+        circle_geo = create_circle_geojson(speaker[0], speaker[1], max_radius)
+        anim_layer = pdk.Layer(
+            "GeoJsonLayer",
+            data=circle_geo,
+            get_fill_color=[255, 0, 0, alpha],
+            get_line_color=[255, 0, 0],
+            line_width_min_pixels=2,
+        )
+        current_layers = base_layers + [anim_layer]
+        deck = pdk.Deck(
+            layers=current_layers,
+            initial_view_state=view_state,
+            tooltip={"text": "{label}\n方向: {dir_deg}\n音圧: {value}"}
+        )
+        container.pydeck_chart(deck)
+        time.sleep(0.2)
     container.empty()
 
 # ------------------ メインUI ------------------
@@ -350,7 +375,7 @@ def main():
     
     # セッション初期化
     if "map_center" not in st.session_state:
-        st.session_state.map_center = [34.25, 133.20]
+        st.session_state.map_center = [34.25, 133.20]  # 上島町中心
     if "map_zoom" not in st.session_state:
         st.session_state.map_zoom = 11
     if "speakers" not in st.session_state:
@@ -372,7 +397,7 @@ def main():
     if "selected_index" not in st.session_state:
         st.session_state.selected_index = None
 
-    # サイドバー
+    # サイドバー操作
     with st.sidebar:
         st.header("操作パネル")
         upfile = st.file_uploader("CSVアップロード", type=["csv"])
@@ -428,7 +453,7 @@ def main():
                 new_lat = st.text_input("緯度", value=str(spk[0]))
                 new_lon = st.text_input("経度", value=str(spk[1]))
                 new_lbl = st.text_input("ラベル", value=spk[2])
-                new_dir = st.text_input("方向", value=str(spk[3] if len(spk)>=4 else "0"))
+                new_dir = st.text_input("方向", value=str(spk[3] if len(spk) >= 4 else "0"))
                 if st.form_submit_button("編集保存"):
                     try:
                         latv = float(new_lat)
@@ -474,7 +499,7 @@ def main():
         spk_list.append([s[0], s[1], s[2], flag])
     spk_df = pd.DataFrame(spk_list, columns=["lat", "lon", "label", "flag"])
     spk_df["z"] = 30  # 3Dモデル表示用の高さ
-    spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x == "new" else [0, 0, 255])
+    spk_df["color"] = spk_df["flag"].apply(lambda x: [255, 0, 0] if x=="new" else [0, 0, 255])
     
     # ------------------ レイヤー作成 ------------------
     layers = []
@@ -500,7 +525,7 @@ def main():
         scatter_layer = create_scatter_layer(spk_df)
         layers.append(scatter_layer)
     
-    # すべてのスピーカーを 3Dモデルで表示する ScenegraphLayer を追加（ScatterplotLayer の代わりとして）
+    # スピーカー 3Dモデル (ScenegraphLayer) を追加（カラムより上に表示）
     speaker_3d_layer = create_speaker_3d_layer(spk_df)
     layers.append(speaker_3d_layer)
     
@@ -533,10 +558,10 @@ def main():
         base_layers = layers.copy()
         animate_propagation(selected_spk, base_layers, view_state)
         st.session_state.animate = False
-
+    
     st.pydeck_chart(base_deck)
     
-    # CSVダウンロード
+    # ------------------ CSV ダウンロード ------------------
     csv_data = export_csv(st.session_state.speakers)
     st.download_button("スピーカーCSVダウンロード", csv_data, "speakers.csv", "text/csv")
     
