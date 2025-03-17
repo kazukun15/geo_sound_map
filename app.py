@@ -10,7 +10,7 @@ import branca.colormap as cm
 import requests
 import re
 
-# st.set_page_config() は必ず最初に呼び出す
+# st.set_page_config() は最初に呼び出します
 st.set_page_config(page_title="防災スピーカー音圧可視化マップ", layout="wide")
 
 # ---------- Custom CSS for UI styling ----------
@@ -40,8 +40,8 @@ div.stButton > button:hover {
     background-color: #45a049;
 }
 
-/* テキスト入力とテキストエリアのスタイル */
-div.stTextInput>div>input, div.stTextArea>div>textarea {
+/* テキスト入力のスタイル */
+div.stTextInput>div>input {
     font-size: 16px;
     padding: 8px;
 }
@@ -59,7 +59,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # ------------------------------------------------------------------
 # 定数／設定（APIキー、モデル）
 # ------------------------------------------------------------------
-API_KEY = st.secrets["general"]["api_key"]  # secrets.toml に [general] セクションで設定してください
+API_KEY = st.secrets["general"]["api_key"]  # secrets.tomlに [general] セクションで設定してください
 MODEL_NAME = "gemini-2.0-flash"
 
 # ----------------------------------------------------------------
@@ -72,9 +72,8 @@ DIRECTION_MAPPING = {
 
 def parse_direction(direction_str):
     """
-    入力文字列から方向（度数）に変換する関数。
-    "N", "E", "S", "W"（大文字・小文字問わず）も数字も受け付ける。
-    例: "N" -> 0, "sw" -> 225, "45" -> 45.0
+    文字列から方向（度数）に変換する関数。
+    例: "N" -> 0, "SW" -> 225, "45" -> 45.0
     """
     direction_str = direction_str.strip().upper()
     if direction_str in DIRECTION_MAPPING:
@@ -93,8 +92,9 @@ def load_csv(file):
     CSVファイルを読み込み、スピーカーと計測データを抽出する関数。
     
     Returns:
-      speakers: [[lat, lon, [dir1, ...], admin], ...]
-      measurements: [[lat, lon, db], ...]
+        (speakers, measurements)
+        speakers: [[lat, lon, [dir1, dir2, ...]], ...]
+        measurements: [[lat, lon, db], ...]
     """
     try:
         df = pd.read_csv(file)
@@ -102,10 +102,9 @@ def load_csv(file):
         for _, row in df.iterrows():
             if not pd.isna(row.get("スピーカー緯度")):
                 lat, lon = row["スピーカー緯度"], row["スピーカー経度"]
-                admin = row.get("行政区", "")
                 directions = [parse_direction(row.get(f"方向{i}", "")) 
                               for i in range(1, 4) if not pd.isna(row.get(f"方向{i}"))]
-                speakers.append([lat, lon, directions, admin])
+                speakers.append([lat, lon, directions])
             if not pd.isna(row.get("計測位置緯度")):
                 lat, lon, db = row["計測位置緯度"], row["計測位置経度"], row.get("計測デシベル", 0)
                 measurements.append([lat, lon, float(db)])
@@ -120,14 +119,14 @@ def export_csv(data, columns):
     """
     rows = []
     for entry in data:
-        if len(entry) >= 3 and isinstance(entry[2], list):
-            lat, lon, directions = entry[0], entry[1], entry[2]
-            admin = entry[3] if len(entry) > 3 else ""
+        if len(entry) == 3 and isinstance(entry[2], list):
+            lat, lon, directions = entry
             row = {
                 "スピーカー緯度": lat,
                 "スピーカー経度": lon,
-                "方向": directions[0] if directions else "",
-                "行政区": admin
+                "方向1": directions[0] if len(directions) > 0 else "",
+                "方向2": directions[1] if len(directions) > 1 else "",
+                "方向3": directions[2] if len(directions) > 2 else ""
             }
         else:
             row = {columns[i]: entry[i] for i in range(len(columns))}
@@ -143,24 +142,27 @@ def export_csv(data, columns):
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
     各グリッド点における音圧レベルを計算し、2D配列（sound_grid）として返す関数。
-    スピーカーの影響は、距離と方向性（コサイン補正＋最低 0.3 倍）に基づいて計算される。
-    行政区情報はヒートマップ計算には影響しないので無視する。
+    各スピーカーの影響は、距離と方向性（コサイン補正＋最低 0.3 倍）に基づいて計算されます。
     """
     Nx, Ny = grid_lat.shape
     power_sum = np.zeros((Nx, Ny))
     
+    # grid_lat, grid_lon は2D配列（度単位）なので、各グリッド点との距離は以下で計算
     for spk in speakers:
-        lat, lon, dirs = spk[0], spk[1], spk[2]
+        lat, lon, dirs = spk
         dlat = grid_lat - lat
         dlon = grid_lon - lon
+        # 経度は緯度に依存して補正
         distance = np.sqrt((dlat * 111320)**2 + (dlon * 111320 * np.cos(np.radians(lat)))**2)
         distance[distance < 1] = 1
+        # 各グリッド点への方位
         bearing = (np.degrees(np.arctan2(dlon, dlat))) % 360
         power = np.zeros_like(distance)
         for direction in dirs:
             angle_diff = np.abs(bearing - direction) % 360
-            directional_factor = np.where(np.cos(np.radians(angle_diff)) > 0.3,
-                                          np.cos(np.radians(angle_diff)),
+            # 後方でも最低 0.3 の強度を保証
+            directional_factor = np.where(np.cos(np.radians(angle_diff)) > 0.3, 
+                                          np.cos(np.radians(angle_diff)), 
                                           0.3)
             intensity = directional_factor * (10 ** ((L0 - 20 * np.log10(distance)) / 10))
             power += intensity
@@ -228,38 +230,41 @@ def optimize_speaker_placement(speakers, target, L0, r_max, grid_lat, grid_lon, 
 # ----------------------------------------------------------------
 def generate_gemini_prompt(user_query):
     """
-    以下の条件と地形情報、行政区の境界情報、そして島情報を考慮し、最適なスピーカー配置案を提案してください。
-
-    【条件】
-    - スピーカーは、被災地域全体に均一に音声を届ける必要がある。
-    - スピーカー同士は、お互いの干渉を避けるため、原則として300m以上離れているように配置する。
-    - 各スピーカーは、設置場所の地形（山、谷、海岸、島、樹林など）や障害物、さらに行政区（市区町村や区など）の境界や特徴を考慮し、最適な方向に向ける必要がある。
-    - 行政区の境界を尊重し、各区内で均一なカバーと、隣接区との連携を考慮してください。
-
-    【対象地域情報】
-    対象地域は愛媛県上島町です。上島町は、四国の愛媛県に位置し、複数の島々から構成されています。町内は、美しい海岸線、平野、丘陵および山地が混在し、温暖な気候と豊かな自然景観を有しています。行政区としては、上島町全域が対象となり、各島ごとに異なる特色があります。
-
-    【島情報】
-    - 弓削島: 緯度 34.2333, 経度 133.2000
-    - 佐島: 緯度 34.2500, 経度 133.2000
-    - 生名島: 緯度 34.2667, 経度 133.1833
-    - 岩城島: 緯度 34.2833, 経度 133.1667
-    - 高井神島: 緯度 34.3000, 経度 133.2167
-    - 魚島: 緯度 34.3333, 経度 133.2500
-    - 豊島: 緯度 34.3167, 経度 133.2333
-
-    【出力形式】
-    - 各スピーカーの配置は必ず以下の形式で出力してください。
-      「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z, 行政区: AAA」
-      （例：緯度 34.254000, 経度 133.208000, 方向 270, 行政区: △△区）
-    - 各配置について、その設置理由や、考慮した地形および行政区の特徴も簡潔に説明してください。
-
-    【ユーザーの問い合わせ】
-    {user_query}
-
-    上記の条件と情報に基づき、最も効果的なスピーカー配置案とその理由を、具体的かつ詳細に提案してください。
+    ユーザーの問い合わせと地図上のスピーカー配置、音圧分布の概要に加え、
+    海など設置に困難な場所は除外、スピーカー同士は300m程度離れている場所、
+    さらに山や生えている木の種類などの地形情報も加味して、設置が可能な安全かつ効果的な場所を提案するよう指示してください。
+    座標表記形式は「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」に固定してください。
     """
-    return generate_gemini_prompt.__doc__.format(user_query=user_query)
+    speakers = st.session_state.speakers if "speakers" in st.session_state else []
+    num_speakers = len(speakers)
+    
+    if num_speakers > 5:
+        speaker_list = speakers[:5]
+        speaker_info = "以下のスピーカーが配置されています:\n"
+        for idx, spk in enumerate(speaker_list):
+            speaker_info += f"{idx+1}. 緯度: {spk[0]:.6f}, 経度: {spk[1]:.6f}, 方向: {spk[2]}\n"
+        speaker_info += f"他 {num_speakers - 5} 件のスピーカーも配置されています。\n"
+    elif num_speakers > 0:
+        speaker_info = "以下のスピーカーが配置されています:\n"
+        for idx, spk in enumerate(speakers):
+            speaker_info += f"{idx+1}. 緯度: {spk[0]:.6f}, 経度: {spk[1]:.6f}, 方向: {spk[2]}\n"
+    else:
+        speaker_info = "現在、スピーカーは配置されていません。\n"
+    
+    sound_range = f"{st.session_state.L0 - 40}dB ~ {st.session_state.L0}dB"
+    
+    prompt = (
+        f"{speaker_info}"
+        f"現在の音圧レベルの範囲は概ね {sound_range} です。\n"
+        "海など設置に困難な場所は除外してください。\n"
+        "また、スピーカー同士は300m程度離れている場所を考慮し、"
+        "さらに山や生えている木の種類などの地形情報も加味して、"
+        "設置が可能な安全かつ効果的な場所を提案してください。\n"
+        f"ユーザーからの問い合わせ: {user_query}\n"
+        "上記の情報に基づき、スピーカー配置や音圧分布に関する分析・改善案・提案を具体的に述べてください。\n"
+        "【座標表記形式】 緯度 xxx.xxxxxx, 経度 yyy.yyyyyy で統一してください。"
+    )
+    return prompt
 
 def call_gemini_api(query):
     """
@@ -281,59 +286,24 @@ def call_gemini_api(query):
         return {}
 
 # ----------------------------------------------------------------
-# Module: Utility for extracting coordinates, direction, and admin from text
+# Module: Utility for extracting coordinates from text
 # ----------------------------------------------------------------
-def extract_coords_and_dir_from_text(text):
+def extract_coordinates_from_text(text):
     """
-    説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z, 行政区: AAA」形式の情報を抽出する関数。
-    行政区は省略可能（省略された場合は空文字）。
-    対応する文字列は、コロン有り／無しの両方に対応。
-    例:
-      "緯度 34.254000, 経度 133.208000, 方向 270, 行政区: △△区"
-      "34.284500, 133.104500, 方向 0"
-      "緯度: 34.273000, 経度: 133.215000, 方向: 225, 行政区: ○○市"
-    見つかった情報をリストで返す。例: [(34.254000, 133.208000, 270, "△△区")]
+    説明文から「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」形式の座標をすべて抽出する。
+    見つかった座標をリストで返す。
     """
-    pattern = r"(?:緯度[:：]?\s*)?([-\d]+\.\d+),\s*(?:経度[:：]?\s*)?([-\d]+\.\d+),\s*方向[:：]?\s*([-\d]+(?:\.\d+)?)(?:,\s*(?:行政区[:：]?\s*)(\S+))?"
+    pattern = r"緯度\s+([-\d]+\.\d{6}),\s+経度\s+([-\d]+\.\d{6})"
     matches = re.findall(pattern, text)
-    results = []
-    for lat_str, lon_str, dir_str, admin in matches:
+    coords = []
+    for lat_str, lon_str in matches:
         try:
             lat = float(lat_str)
             lon = float(lon_str)
-            direction = parse_direction(dir_str)
-            admin = admin if admin is not None else ""
-            results.append((lat, lon, direction, admin))
+            coords.append((lat, lon))
         except ValueError:
             continue
-    return results
-
-# ----------------------------------------------------------------
-# Module: Utility for parsing speaker addition input
-# ----------------------------------------------------------------
-def parse_speaker_input(text):
-    """
-    入力欄に貼り付けられた固定形式の文字列から、
-    (lat, lon, direction, admin) を抽出する関数。
-    対応例：
-      "緯度 34.254000, 経度 133.208000, 方向 270"
-      "緯度: 34.273000, 経度: 133.215000, 方向: 225"
-      "34.284500, 133.104500, 方向 0"
-    行政区が入力されていない場合は空文字とする。
-    """
-    pattern = r"^(?:緯度[:：]?\s*)?([-\d]+\.\d+),\s*(?:経度[:：]?\s*)?([-\d]+\.\d+),\s*方向[:：]?\s*([-\d]+(?:\.\d+)?)(?:,\s*(?:行政区[:：]?\s*)(\S+))?$"
-    match = re.search(pattern, text)
-    if match:
-        lat_str, lon_str, dir_str, admin = match.groups()
-        try:
-            lat = float(lat_str)
-            lon = float(lon_str)
-            direction = parse_direction(dir_str)
-            admin = admin if admin is not None else ""
-            return lat, lon, direction, admin
-        except ValueError:
-            return None
-    return None
+    return coords
 
 # ----------------------------------------------------------------
 # Module: Main Application (UI)
@@ -341,16 +311,13 @@ def parse_speaker_input(text):
 def main():
     st.title("防災スピーカー音圧可視化マップ")
     
-    # セッションステート初期化（スピーカーは [lat, lon, [direction], admin] の形式）
+    # セッションステート初期化
     if "map_center" not in st.session_state:
         st.session_state.map_center = [34.25741795269067, 133.20450105700033]
     if "map_zoom" not in st.session_state:
         st.session_state.map_zoom = 14
     if "speakers" not in st.session_state:
-        st.session_state.speakers = [
-            [34.25741795269067, 133.20450105700033, [0.0, 90.0], ""],
-            [34.2574617056359, 133.204487449849, [0.0], ""]
-        ]
+        st.session_state.speakers = [[34.25741795269067, 133.20450105700033, [0.0, 90.0]]]
     if "measurements" not in st.session_state:
         st.session_state.measurements = []
     if "heatmap_data" not in st.session_state:
@@ -359,6 +326,8 @@ def main():
         st.session_state.L0 = 80
     if "r_max" not in st.session_state:
         st.session_state.r_max = 500
+    if "gemini_parsed" not in st.session_state:
+        st.session_state.gemini_parsed = False
     if "edit_index" not in st.session_state:
         st.session_state.edit_index = None
     
@@ -376,27 +345,23 @@ def main():
             st.success("CSVファイルを読み込みました。")
             st.session_state.heatmap_data = None
         
-        # スピーカー追加：固定形式の入力を想定
-        new_speaker = st.text_input("スピーカー追加", 
-                                    placeholder="例: 緯度 34.254000, 経度 133.208000, 方向 270\nまたは 34.284500, 133.104500, 方向 0\nまたは 緯度: 34.273000, 経度: 133.215000, 方向: 225")
+        # スピーカー追加
+        new_speaker = st.text_input("スピーカー追加 (緯度,経度,方向1,方向2...)", placeholder="例: 34.2579,133.2072,N,E")
         if st.button("スピーカー追加"):
-            parsed = parse_speaker_input(new_speaker)
-            if parsed:
-                lat, lon, direction, admin = parsed
-                st.session_state.speakers.append([lat, lon, [direction], admin])
+            try:
+                parts = new_speaker.split(",")
+                lat, lon = float(parts[0]), float(parts[1])
+                directions = [parse_direction(dir_str) for dir_str in parts[2:]]
+                st.session_state.speakers.append([lat, lon, directions])
                 st.session_state.heatmap_data = None
-                st.success(f"スピーカーを追加しました: 緯度 {lat}, 経度 {lon}, 方向 {direction}, 行政区: {admin}")
-            else:
-                st.error("入力形式が正しくありません。形式は『緯度 34.254000, 経度 133.208000, 方向 270』などで入力してください。")
+                st.success(f"スピーカーを追加しました: {lat}, {lon}, {directions}")
+            except (ValueError, IndexError) as e:
+                st.error("スピーカーの追加に失敗しました。形式が正しくない可能性があります。(緯度,経度,方向...)")
         
         # スピーカー削除・編集機能
         if st.session_state.speakers:
-            options = []
-            for i, spk in enumerate(st.session_state.speakers):
-                admin_str = f", 行政区: {spk[3]}" if len(spk) > 3 and spk[3] else ""
-                options.append(f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}{admin_str}")
-            selected_index = st.selectbox("スピーカーを選択", list(range(len(options))),
-                                          format_func=lambda i: options[i])
+            options = [f"{i}: ({spk[0]:.6f}, {spk[1]:.6f}) - 方向: {spk[2]}" for i, spk in enumerate(st.session_state.speakers)]
+            selected_index = st.selectbox("スピーカーを選択", list(range(len(options))), format_func=lambda i: options[i])
             col_del, col_edit = st.columns(2)
             with col_del:
                 if st.button("選択したスピーカーを削除"):
@@ -418,27 +383,24 @@ def main():
                 spk = st.session_state.speakers[st.session_state.edit_index]
                 new_lat = st.text_input("新しい緯度", value=str(spk[0]), key="edit_lat")
                 new_lon = st.text_input("新しい経度", value=str(spk[1]), key="edit_lon")
-                new_dirs = st.text_input("新しい方向（カンマ区切り、例: N,E,S,Wまたは数値）", 
-                                         value=",".join(str(d) for d in spk[2]), key="edit_dirs")
-                new_admin = st.text_input("新しい行政区（例: △△区）", value=spk[3] if len(spk)>3 else "", key="edit_admin")
+                new_dirs = st.text_input("新しい方向（カンマ区切り）", value=",".join(str(d) for d in spk[2]), key="edit_dirs")
                 submitted = st.form_submit_button("編集内容を保存")
                 if submitted:
                     try:
                         lat_val = float(new_lat)
                         lon_val = float(new_lon)
                         directions_val = [parse_direction(x) for x in new_dirs.split(",")]
-                        st.session_state.speakers[st.session_state.edit_index] = [lat_val, lon_val, directions_val, new_admin]
+                        st.session_state.speakers[st.session_state.edit_index] = [lat_val, lon_val, directions_val]
                         st.session_state.heatmap_data = None
                         st.success("スピーカー情報が更新されました")
                         st.session_state.edit_index = None
                     except Exception as e:
                         st.error(f"編集内容の保存に失敗しました: {e}")
         
-        # スピーカーリセット（Gemini のレスポンスもクリア）
+        # スピーカーリセット
         if st.button("スピーカーリセット"):
             st.session_state.speakers = []
             st.session_state.heatmap_data = None
-            st.session_state.gemini_result = None
             st.success("スピーカーをリセットしました")
         
         # パラメータ調整
@@ -449,19 +411,10 @@ def main():
         target_default = st.session_state.L0 - 20
         target_level = st.slider("目標音圧レベル (dB)", st.session_state.L0 - 40, st.session_state.L0, target_default)
         if st.button("自動最適配置を実行"):
-            if st.session_state.speakers:
-                lats = [s[0] for s in st.session_state.speakers]
-                lons = [s[1] for s in st.session_state.speakers]
-                margin = 0.005
-                lat_min = min(lats) - margin
-                lat_max = max(lats) + margin
-                lon_min = min(lons) - margin
-                lon_max = max(lons) + margin
-            else:
-                lat_min = st.session_state.map_center[0] - 0.01
-                lat_max = st.session_state.map_center[0] + 0.01
-                lon_min = st.session_state.map_center[1] - 0.01
-                lon_max = st.session_state.map_center[1] + 0.01
+            lat_min = st.session_state.map_center[0] - 0.01
+            lat_max = st.session_state.map_center[0] + 0.01
+            lon_min = st.session_state.map_center[1] - 0.01
+            lon_max = st.session_state.map_center[1] + 0.01
             grid_lat, grid_lon = np.meshgrid(
                 np.linspace(lat_min, lat_max, 50),
                 np.linspace(lon_min, lon_max, 50)
@@ -485,95 +438,58 @@ def main():
         
         # Gemini API 呼び出し
         st.subheader("Gemini API 呼び出し")
-        gemini_query = st.text_area("Gemini に問い合わせる内容", height=150,
-                                    placeholder="ここに問い合わせ内容を入力してください")
+        gemini_query = st.text_input("Gemini に問い合わせる内容")
         if st.button("Gemini API を実行"):
-            full_prompt = (
-                "あなたは、災害対策のために公共空間にスピーカーを配置する専門家です。以下の条件と地形情報、行政区の境界情報、そして島情報を考慮し、最適なスピーカー配置案を提案してください。\n\n"
-                "【条件】\n"
-                "- スピーカーは、被災地域全体に均一に音声を届ける必要がある。\n"
-                "- スピーカー同士は、お互いの干渉を避けるため、原則として300m以上離れているように配置する。\n"
-                "- 各スピーカーは、設置場所の地形（山、谷、海岸、島、樹林など）や障害物、さらに行政区（市区町村や区など）の境界や特徴を考慮し、最適な方向に向ける必要がある。\n"
-                "- 行政区の境界を尊重し、各区内で均一なカバーと、隣接区との連携を考慮してください。\n\n"
-                "【対象地域情報】\n"
-                "対象地域は愛媛県上島町です。上島町は、四国の愛媛県に位置し、複数の島々から構成されています。町内は、美しい海岸線、平野、丘陵および山地が混在し、温暖な気候と豊かな自然景観を有しています。行政区としては、上島町全域が対象となり、各島ごとに異なる特色があります。\n\n"
-                "【島情報】\n"
-                "- 弓削島: 緯度 34.2333, 経度 133.2000\n"
-                "- 佐島: 緯度 34.2500, 経度 133.2000\n"
-                "- 生名島: 緯度 34.2667, 経度 133.1833\n"
-                "- 岩城島: 緯度 34.2833, 経度 133.1667\n"
-                "- 高井神島: 緯度 34.3000, 経度 133.2167\n"
-                "- 魚島: 緯度 34.3333, 経度 133.2500\n"
-                "- 豊島: 緯度 34.3167, 経度 133.2333\n\n"
-                "【出力形式】\n"
-                "- 各スピーカーの配置は必ず以下の形式で出力してください。\n"
-                "  「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy, 方向 Z, 行政区: AAA」\n"
-                "  （例：緯度 34.254000, 経度 133.208000, 方向 270, 行政区: △△区）\n"
-                "- 各配置について、その設置理由や、考慮した地形および行政区の特徴も簡潔に説明してください。\n\n"
-                "【ユーザーの問い合わせ】\n"
-                f"{gemini_query}\n\n"
-                "上記の条件と情報に基づき、最も効果的なスピーカー配置案とその理由を、具体的かつ詳細に提案してください。"
-            )
+            full_prompt = generate_gemini_prompt(gemini_query)
             result = call_gemini_api(full_prompt)
             st.session_state.gemini_result = result
+            st.session_state.gemini_parsed = False  # 新たな回答があれば解析フラグをリセット
             st.success("Gemini API の実行が完了しました")
     
-    # メインパネル：地図とヒートマップの表示（スピーカー全体の領域に合わせる）
-    if st.session_state.speakers:
-        lats = [s[0] for s in st.session_state.speakers]
-        lons = [s[1] for s in st.session_state.speakers]
-        margin = 0.005
-        lat_min = min(lats) - margin
-        lat_max = max(lats) + margin
-        lon_min = min(lons) - margin
-        lon_max = max(lons) + margin
-        map_center = [(lat_min + lat_max) / 2, (lon_min + lon_max) / 2]
-    else:
+    # メインパネル：地図とヒートマップの表示
+    col1, col2 = st.columns([3, 1])
+    with col1:
         lat_min = st.session_state.map_center[0] - 0.01
         lat_max = st.session_state.map_center[0] + 0.01
         lon_min = st.session_state.map_center[1] - 0.01
         lon_max = st.session_state.map_center[1] + 0.01
-        map_center = st.session_state.map_center
-    grid_lat, grid_lon = np.meshgrid(
-        np.linspace(lat_min, lat_max, 100),
-        np.linspace(lon_min, lon_max, 100)
-    )
-    
-    if st.session_state.heatmap_data is None:
-        st.session_state.heatmap_data = calculate_heatmap(
-            st.session_state.speakers,
-            st.session_state.L0,
-            st.session_state.r_max,
-            grid_lat,
-            grid_lon
+        grid_lat, grid_lon = np.meshgrid(
+            np.linspace(lat_min, lat_max, 100),
+            np.linspace(lon_min, lon_max, 100)
         )
     
-    m = folium.Map(location=map_center, zoom_start=st.session_state.map_zoom)
-    for spk in st.session_state.speakers:
-        lat, lon, dirs = spk[0], spk[1], spk[2]
-        admin = spk[3] if len(spk) > 3 else ""
-        popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})<br><b>方向</b>: {dirs}"
-        if admin:
-            popup_text += f"<br><b>行政区</b>: {admin}"
-        folium.Marker(
-            location=[lat, lon],
-            popup=folium.Popup(popup_text, max_width=300)
-        ).add_to(m)
+        if st.session_state.heatmap_data is None:
+            st.session_state.heatmap_data = calculate_heatmap(
+                st.session_state.speakers,
+                st.session_state.L0,
+                st.session_state.r_max,
+                grid_lat,
+                grid_lon
+            )
+        
+        m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
+        for spk in st.session_state.speakers:
+            lat, lon, dirs = spk
+            popup_text = f"<b>スピーカー</b>: ({lat:.6f}, {lon:.6f})<br><b>方向</b>: {dirs}"
+            folium.Marker(
+                location=[lat, lon],
+                popup=folium.Popup(popup_text, max_width=300)
+            ).add_to(m)
+        
+        if st.session_state.heatmap_data:
+            HeatMap(
+                st.session_state.heatmap_data,
+                min_opacity=0.3,
+                max_opacity=0.8,
+                radius=15,
+                blur=20
+            ).add_to(m)
+        st_folium(m, width=700, height=500)
     
-    if st.session_state.heatmap_data:
-        HeatMap(
-            st.session_state.heatmap_data,
-            min_opacity=0.3,
-            max_opacity=0.8,
-            radius=15,
-            blur=20
-        ).add_to(m)
-    st_folium(m, width=700, height=500)
-    
-    with st.columns([3, 1])[1]:
+    with col2:
         csv_data_speakers = export_csv(
             st.session_state.speakers,
-            ["スピーカー緯度", "スピーカー経度", "方向", "行政区"]
+            ["スピーカー緯度", "スピーカー経度", "方向1", "方向2", "方向3"]
         )
         st.download_button("スピーカーCSVダウンロード", csv_data_speakers, "speakers.csv", "text/csv")
     
@@ -590,26 +506,35 @@ def main():
     st.subheader("Gemini API の回答（説明部分 & JSON）")
     if "gemini_result" in st.session_state:
         result = st.session_state.gemini_result
+        
+        # candidates[0].content.parts[0].text を抽出して説明部分として表示
         explanation_text = ""
         try:
             explanation_text = result["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError, TypeError):
             pass
+        
         if explanation_text:
             st.markdown("#### 説明部分")
             st.write(explanation_text)
-            coords_dirs = extract_coords_and_dir_from_text(explanation_text)
-            if coords_dirs:
-                st.markdown("##### 以下の座標、方向、行政区を検出しました。地図に追加します。")
-                for (lat, lon, direction, admin) in coords_dirs:
-                    if not any(abs(lat - s[0]) < 1e-6 and abs(lon - s[1]) < 1e-6 for s in st.session_state.speakers):
-                        st.session_state.speakers.append([lat, lon, [direction], admin])
-                        st.write(f"- 緯度: {lat}, 経度: {lon}, 方向: {direction}, 行政区: {admin}")
-                st.session_state.heatmap_data = None
-            else:
-                st.info("説明文から固定形式の情報は検出されませんでした。")
+            
+            # 座標抽出：形式「緯度 xxx.xxxxxx, 経度 yyy.yyyyyy」
+            if not st.session_state.gemini_parsed:
+                coords = extract_coordinates_from_text(explanation_text)
+                if coords:
+                    st.markdown("##### 以下の座標を検出しました。地図に追加します。")
+                    for (lat, lon) in coords:
+                        # 同一座標が既に追加されていなければ追加
+                        if not any(abs(lat - s[0]) < 1e-6 and abs(lon - s[1]) < 1e-6 for s in st.session_state.speakers):
+                            st.session_state.speakers.append([lat, lon, [0.0]])  # 方向は仮設定
+                            st.write(f"- 緯度: {lat}, 経度: {lon} を追加")
+                    st.session_state.gemini_parsed = True
+                    st.session_state.heatmap_data = None
+                else:
+                    st.info("説明文から座標は検出されませんでした。")
         else:
             st.error("説明部分の抽出に失敗しました。JSON構造を確認してください。")
+        
         st.markdown("#### JSON 全体")
         st.json(result)
     else:
