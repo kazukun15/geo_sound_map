@@ -209,7 +209,7 @@ def create_circle_geojson(lat, lon, radius, num_points=50):
 # ------------------ ヒートマップの動的設定 ------------------
 def dynamic_radius_pixels(zoom):
     """ズームレベルに応じて、radiusPixels を動的に調整する（zoom=11 のときは約15を基準とする）"""
-    return max(20, int(20 * (20 / zoom)))
+    return max(1, int(200 * (20 / zoom)))
 
 def create_heatmap_layer(heat_df):
     return pdk.Layer(
