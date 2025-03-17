@@ -3,5 +3,7 @@ folium
 streamlit-folium
 numpy
 pandas
-scikit-image
 branca
+requests
+rasterio
+GDAL
