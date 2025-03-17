@@ -15,6 +15,7 @@ import pydeck as pdk
 # ------------------ 初期設定 ------------------
 st.set_page_config(page_title="愛媛県上島町 全域＋スピーカー伝搬アニメーション", layout="wide")
 
+# CSS でボタンの文字を左揃えに、全体のフォントや色を設定
 CUSTOM_CSS = """
 <style>
 body { font-family: 'Helvetica', sans-serif; }
@@ -339,8 +340,8 @@ def create_column_layer(col_df):
 def animate_all_propagation(speakers, base_layers, view_state, L0):
     """
     全スピーカーからの音圧伝搬アニメーションを同時に表示する。
-    各スピーカーについて、円の半径に応じた透明度を音圧に基づいて計算し表示し、
-    最終状態をそのまま維持する。
+    各スピーカーの円の透明度は、音圧に基づいて計算し表示し、
+    アニメーション終了後はその最終状態を維持する。
     """
     container = st.empty()
     num_steps = 20
@@ -370,8 +371,9 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
             tooltip={"text": "{label}\n方向: {direction} d\n音圧: {value} dB"}
         )
         container.pydeck_chart(deck)
-        time.sleep(0.3)
+        time.sleep(0.25)  # 動作を滑らかにするため短めに設定
         final_deck = deck
+    # フェードアウトフェーズ：徐々に透明度を下げる
     for fade in range(10, -1, -1):
         fade_alpha = int(80 * (fade / 10))
         anim_layers = []
@@ -392,9 +394,9 @@ def animate_all_propagation(speakers, base_layers, view_state, L0):
             tooltip={"text": "{label}\n方向: {direction} d\n音圧: {value} dB"}
         )
         container.pydeck_chart(deck)
-        time.sleep(0.2)
+        time.sleep(0.15)
         final_deck = deck
-    container.empty()
+    # 最終状態を維持（container は空にせず最終デッキを返す）
     return final_deck
 
 # ------------------ 個別スピーカー伝搬アニメーション用 ------------------
@@ -432,6 +434,7 @@ def main():
     # サイドバー操作
     with st.sidebar:
         st.header("操作パネル")
+        # CSVアップロード
         upfile = st.file_uploader("CSVアップロード", type=["csv"])
         if upfile and st.button("CSVからスピーカー登録"):
             new_spk = load_csv(upfile)
@@ -518,7 +521,7 @@ def main():
             st.success("Gemini完了")
             add_speaker_proposals_from_gemini()
         
-        # 個別と全体の伝搬アニメーションボタンを分ける
+        # 個別と全体の伝搬アニメーションボタン
         if st.session_state.speakers:
             if st.button("個別スピーカー伝搬アニメーション表示"):
                 st.session_state.animate_individual = True
@@ -529,6 +532,7 @@ def main():
     grid_lat, grid_lon = generate_grid_for_kamijima(resolution=80)
     
     # ------------------ スピーカーのデータ分割 ------------------
+    # 最初の1件を初期スピーカーとして3Dモデル表示、以降は追加スピーカーとして小さい散布図で表示
     default_spk_list = st.session_state.speakers[0:1] if len(st.session_state.speakers) >= 1 else []
     added_spk_list = st.session_state.speakers[1:] if len(st.session_state.speakers) > 1 else []
     default_spk_df = pd.DataFrame(default_spk_list, columns=["lat", "lon", "label", "direction"]) if default_spk_list else pd.DataFrame(columns=["lat", "lon", "label", "direction"])
@@ -556,19 +560,9 @@ def main():
         else:
             st.info("3Dカラムデータが空です。")
     
-    # スピーカーは、初期スピーカーはScenegraphLayer、追加スピーカーは小さい青丸としてScatterLayerで表示
+    # 初期スピーカーは3Dモデル、追加スピーカーは小さい青丸で表示
     default_layer = create_speaker_3d_layer(default_spk_df) if not default_spk_df.empty else None
-    added_layer = None
-    if not added_spk_df.empty:
-        added_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=added_spk_df,
-            get_position=["lon", "lat"],
-            get_radius=30,  # 小さい円
-            get_fill_color="[0, 0, 255, 255]",  # 青色
-            pickable=True,
-            auto_highlight=True,
-        )
+    added_layer = create_small_scatter_layer(added_spk_df) if not added_spk_df.empty else None
     if default_layer:
         layers.append(default_layer)
     if added_layer:
