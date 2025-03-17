@@ -113,7 +113,7 @@ def export_csv(data):
     return buffer.getvalue().encode("utf-8")
 
 # ----------------------------------------------------------------
-# 音圧計算
+# 音圧計算関連
 # ----------------------------------------------------------------
 def compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon):
     """
@@ -156,7 +156,7 @@ def calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
 
 @st.cache_data(show_spinner=False)
 def cached_calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon):
-    """ヒートマップデータ計算をキャッシュして、再計算を回避する。"""
+    """ヒートマップデータ計算をキャッシュして再計算を回避する。"""
     return calculate_heatmap(speakers, L0, r_max, grid_lat, grid_lon)
 
 # ----------------------------------------------------------------
@@ -173,6 +173,11 @@ def add_contour_lines_to_map(m, grid_lat, grid_lon, speakers, L0, r_max, levels=
         raw_levels = [L0 - 40, L0 - 30, L0 - 20, L0 - 10]
         levels = sorted(raw_levels)  # 昇順にする
     sound_grid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
+    
+    # デバッグ：sound_grid の最小・最大値を表示
+    st.sidebar.write("sound_grid min:", np.nanmin(sound_grid))
+    st.sidebar.write("sound_grid max:", np.nanmax(sound_grid))
+    
     fig, ax = plt.subplots()
     c = ax.contour(grid_lon, grid_lat, sound_grid, levels=levels)
     colors = ["red", "blue", "green", "purple", "orange"]
@@ -391,7 +396,6 @@ def main():
             st.session_state.heatmap_data = None
             st.success("スピーカーをリセットしました")
         
-        # 音響パラメータ
         st.session_state.L0 = st.slider("初期音圧レベル (dB)", 50, 100, st.session_state.L0)
         st.session_state.r_max = st.slider("最大伝播距離 (m)", 100, 2000, st.session_state.r_max)
         
@@ -433,7 +437,7 @@ def main():
                     grid_lon
                 )
         else:
-            st.session_state.heatmap_data = None  # コンターラインの場合は毎回再計算
+            st.session_state.heatmap_data = None  # 等高線の場合は毎回再計算
         
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
         
@@ -445,7 +449,7 @@ def main():
                 popup_text += f"<br><b>ラベル</b>: {label}"
             folium.Marker(location=[lat, lon], popup=folium.Popup(popup_text, max_width=300)).add_to(m)
         
-        # ヒートマップ or コンターライン描画
+        # ヒートマップ or 等高線描画
         if display_mode == "HeatMap":
             if st.session_state.heatmap_data and len(st.session_state.heatmap_data) > 0:
                 HeatMap(st.session_state.heatmap_data, min_opacity=0.3, max_opacity=0.8,
