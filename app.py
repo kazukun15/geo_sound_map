@@ -133,8 +133,8 @@ def create_heatmap_layer(df: pd.DataFrame, zoom: int) -> pdk.Layer:
         get_position=["longitude", "latitude"],
         get_weight="weight",
         radiusPixels=dynamic_radius(zoom),
-        min_opacity=0.05,
-        max_opacity=0.2
+        min_opacity=0.01,
+        max_opacity=0.05
     )
 
 def create_column_layer(df: pd.DataFrame) -> pdk.Layer:
