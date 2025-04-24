@@ -96,82 +96,81 @@ def generate_grid(resolution: int = 80) -> Tuple[np.ndarray, np.ndarray]:
     lons = np.linspace(lon_min, lon_max, resolution)
     return np.meshgrid(lats, lons, indexing="xy")
 
+# ------------------ 3Dカラム用データ生成 ------------------
+@st.cache_data
+def get_column_data(
+    speakers: List[List], L0: float, r_max: float,
+    grid_lat: np.ndarray, grid_lon: np.ndarray
+) -> pd.DataFrame:
+    sgrid = compute_sound_grid(speakers, L0, r_max, grid_lat, grid_lon)
+    mask = ~np.isnan(sgrid)
+    if not mask.any():
+        return pd.DataFrame()
+    vmin, vmax = np.nanmin(sgrid), np.nanmax(sgrid)
+    data = []
+    for (i, j) in np.argwhere(mask):
+        val = sgrid[i, j]
+        norm = (val - vmin) / (vmax - vmin) if vmax > vmin else 0
+        elevation = norm * 500
+        r = int(255 * norm)
+        g = int(255 * (1 - norm))
+        b = 128
+        a = int(120 * norm)
+        data.append({
+            "lon": grid_lon[i, j],
+            "lat": grid_lat[i, j],
+            "elevation": elevation,
+            "color": [r, g, b, a]
+        })
+    return pd.DataFrame(data)
+
 # ------------------ レイヤー作成 ------------------
 def create_heatmap_layer(df: pd.DataFrame, zoom: int) -> pdk.Layer:
-    def dynamic_radius(z): return max(200, int(50*(30/z)))
+    def dynamic_radius(z): return max(200, int(50 * (30 / z)))
     return pdk.Layer(
-        "HeatmapLayer", df,
-        get_position=["longitude","latitude"],
+        "HeatmapLayer",
+        df,
+        get_position=["longitude", "latitude"],
         get_weight="weight",
         radiusPixels=dynamic_radius(zoom),
-        min_opacity=0.1, max_opacity=0.3
+        min_opacity=0.05,
+        max_opacity=0.2
     )
 
 def create_column_layer(df: pd.DataFrame) -> pdk.Layer:
     return pdk.Layer(
-        "ColumnLayer", df,
-        get_position=["lon","lat"],
+        "ColumnLayer",
+        df,
+        get_position=["lon", "lat"],
         get_elevation="elevation",
         elevation_scale=1,
         radius=20,
         get_fill_color="color",
-        pickable=True, auto_highlight=True
-    )
-
-def create_contour_layer(df: pd.DataFrame, thresholds: List[float]) -> pdk.Layer:
-    return pdk.Layer(
-        "ContourLayer", df,
-        get_position=["longitude","latitude"],
-        get_weight="weight",
-        cellSize=50,
-        thresholds=thresholds
-    )
-
-def create_silent_layer(df: pd.DataFrame) -> pdk.Layer:
-    return pdk.Layer(
-        "ScatterplotLayer", df,
-        get_position=["longitude","latitude"],
-        get_fill_color=[200,200,200,80],
-        get_radius=50,
-        pickable=False
+        pickable=True,
+        auto_highlight=True
     )
 
 def create_scatter_layer(df: pd.DataFrame) -> pdk.Layer:
     return pdk.Layer(
-        "ScatterplotLayer", df,
-        get_position=["lon","lat"],
-        get_fill_color=[0,0,255,255],
+        "ScatterplotLayer",
+        df,
+        get_position=["lon", "lat"],
+        get_fill_color=[0, 0, 255, 255],
         get_radius=30,
-        pickable=True, auto_highlight=True
+        pickable=True,
+        auto_highlight=True
     )
 
 def create_scenegraph_layer(df: pd.DataFrame) -> pdk.Layer:
     URL = "https://raw.githubusercontent.com/visgl/deck.gl-data/master/scenegraph/airplane/scene.gltf"
     return pdk.Layer(
-        "ScenegraphLayer", df.assign(z=50),
+        "ScenegraphLayer",
+        df.assign(z=50),
         scenegraph=URL,
-        get_position=["lon","lat","z"],
+        get_position=["lon", "lat", "z"],
         sizeScale=20,
         pickable=True
     )
-
-# ------------------ Gemini API連携 ------------------
-def call_gemini(prompt: str, api_key: str, model: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    payload = {"contents":[{"parts":[{"text":prompt}]}]}
-    try:
-        res = requests.post(url, json=payload, timeout=30)
-        res.raise_for_status()
-        cands = res.json().get("candidates", [])
-        if not cands:
-            return ""
-        cv = cands[0].get("content", cands[0].get("output",""))
-        if isinstance(cv, dict):
-            return "".join(p.get("text","") for p in cv.get("parts",[]))
-        return str(cv)
-    except Exception as e:
-        st.error(f"Gemini APIエラー: {e}")
-        return ""
 
 # ------------------ Streamlitレイアウト ------------------
 def setup_page():
@@ -181,13 +180,13 @@ def setup_page():
 
 def init_state():
     s = st.session_state
-    s.setdefault("speakers", [[34.25,133.20,"初期スピーカーA",0.0]])
+    s.setdefault("speakers", [[34.25, 133.20, "初期スピーカーA", 0.0]])
     s.setdefault("L0", 80)
     s.setdefault("r_max", 500)
     s.setdefault("map_zoom", DEFAULT_ZOOM)
     s.setdefault("grid", generate_grid())
     s.setdefault("heatmap_df", None)
-    s.setdefault("gemini_res", "")
+    s.setdefault("display_mode", "HeatMap")
     s.setdefault("center_targets", [])
 
 def main():
@@ -207,27 +206,19 @@ def main():
             try:
                 lat, lon, *rest = [p.strip() for p in txt.split(",")]
                 lbl = rest[0] if rest else "新スピーカー"
-                dir_deg = parse_direction(rest[1] if len(rest)>1 else "0")
-                st.session_state.speakers.append([float(lat),float(lon),lbl,dir_deg])
+                dir_deg = parse_direction(rest[1] if len(rest) > 1 else "0")
+                st.session_state.speakers.append([float(lat), float(lon), lbl, dir_deg])
                 st.session_state.heatmap_df = None
                 st.success("追加成功")
             except Exception as e:
                 st.error(f"追加失敗: {e}")
 
-        st.slider("初期音圧 (dB)", 50,100, key="L0")
-        st.slider("最大伝播距離 (m)",100,2000, key="r_max")
-        mode = st.radio("表示モード", ["HeatMap","3D Columns"], index=0)
-        st.session_state.display_mode = mode
+        st.slider("初期音圧 (dB)", 50, 100, key="L0")
+        st.slider("最大伝播距離 (m)", 100, 2000, key="r_max")
+        st.radio("表示モード", ["HeatMap", "3D Columns"], key="display_mode")
 
-        # 中心指定用マルチセレクト
-        opts = [f"{i}: {s[2]}({s[0]:.4f},{s[1]:.4f})" for i,s in enumerate(st.session_state.speakers)]
-        centers = st.multiselect("中心スピーカー選択", opts, key="center_targets")
-
-        query = st.text_input("Gemini 問い合わせ")
-        if st.button("Gemini 実行"):
-            res = call_gemini(query, st.secrets["general"]["api_key"], "gemini-2.0-flash")
-            st.session_state.gemini_res = res
-            st.success("Gemini 完了")
+        opts = [f"{i}: {s[2]}({s[0]:.4f},{s[1]:.4f})" for i, s in enumerate(st.session_state.speakers)]
+        st.multiselect("中心スピーカー選択", opts, key="center_targets")
 
     grid_lat, grid_lon = st.session_state.grid
 
@@ -239,60 +230,41 @@ def main():
             grid_lat, grid_lon
         )
         data = [
-            {"latitude":grid_lat[i,j],"longitude":grid_lon[i,j],"weight":sgrid[i,j]}
-            for i,j in np.ndindex(sgrid.shape)
+            {"longitude": grid_lon[i, j], "latitude": grid_lat[i, j], "weight": sgrid[i, j]}
+            for i, j in np.ndindex(sgrid.shape)
         ]
         st.session_state.heatmap_df = pd.DataFrame(data)
 
     df = st.session_state.heatmap_df
     layers = []
 
-    # ヒートマップ or カラム
     if st.session_state.display_mode == "HeatMap":
         layers.append(create_heatmap_layer(df, st.session_state.map_zoom))
     else:
-        # カラムデータ作成
-        vals = df["weight"]
-        mn, mx = vals.min(), vals.max()
-        col_data = df.dropna().assign(
-            lon=df.longitude, lat=df.latitude,
-            elevation=lambda d: (d.weight-mn)/(mx-mn)*500,
-            color=lambda d: d.weight.dropna().apply(lambda v: [
-                int(255*(v-mn)/(mx-mn)),
-                int(255*(1-(v-mn)/(mx-mn))),
-                128, 120
-            ])
+        col_df = get_column_data(
+            st.session_state.speakers,
+            st.session_state.L0,
+            st.session_state.r_max,
+            grid_lat,
+            grid_lon
         )
-        layers.append(create_column_layer(col_data))
+        if col_df.empty:
+            st.info("3Dカラムデータが空です。")
+        else:
+            layers.append(create_column_layer(col_df))
 
-    # 重なり可視化: 等高線
-    thresholds = [
-        st.session_state.L0-30,
-        st.session_state.L0-20,
-        st.session_state.L0-10,
-        st.session_state.L0
-    ]
-    layers.append(create_contour_layer(df.dropna(), thresholds))
-
-    # 無音域可視化
-    silent_df = df[df["weight"].isna()]
-    if not silent_df.empty:
-        layers.append(create_silent_layer(silent_df))
-
-    # スピーカーポイント
-    init_df = pd.DataFrame(st.session_state.speakers[:1], columns=["lat","lon","label","direction"])
-    add_df  = pd.DataFrame(st.session_state.speakers[1:], columns=["lat","lon","label","direction"])
+    init_df = pd.DataFrame(st.session_state.speakers[:1], columns=["lat", "lon", "label", "direction"])
+    add_df = pd.DataFrame(st.session_state.speakers[1:], columns=["lat", "lon", "label", "direction"])
     if not init_df.empty:
         layers.append(create_scenegraph_layer(init_df))
     if not add_df.empty:
         layers.append(create_scatter_layer(add_df))
 
-    # 中心位置計算
     if st.session_state.center_targets:
         idxs = [int(o.split(":")[0]) for o in st.session_state.center_targets]
         lats = [st.session_state.speakers[i][0] for i in idxs]
         lons = [st.session_state.speakers[i][1] for i in idxs]
-        center = (sum(lats)/len(lats), sum(lons)/len(lons))
+        center = (sum(lats) / len(lats), sum(lons) / len(lons))
     else:
         center = MAP_CENTER
 
@@ -300,7 +272,7 @@ def main():
         latitude=center[0],
         longitude=center[1],
         zoom=st.session_state.map_zoom,
-        pitch=45 if st.session_state.display_mode=="3D Columns" else 0
+        pitch=45 if st.session_state.display_mode == "3D Columns" else 0
     )
     st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view))
 
