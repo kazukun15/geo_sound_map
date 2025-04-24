@@ -297,7 +297,7 @@ def main():
             res = call_gemini(
                 prompt,
                 st.secrets["general"]["api_key"],
-                "gemini-2.0-flash"
+                "gemini-2.0-flash-thinking-exp-01-21"
             )
             st.session_state.gemini_result = res
             proposals = extract_speaker_proposals(res)
