@@ -12,8 +12,7 @@ import pydeck as pdk
 
 # ------------------ 設定・定数 ------------------
 APP_TITLE    = "上島町 防災無線AI配置シミュレーター (God Mode)"
-# 上島町（弓削島）付近の座標
-MAP_CENTER   = (34.253, 133.205)
+MAP_CENTER   = (34.253, 133.205) # 上島町（弓削島）付近
 DEFAULT_ZOOM = 11.5
 
 # デザイン設定
@@ -105,7 +104,6 @@ class IntelligentPlanner:
     def find_blind_spot(grid_val: np.ndarray, grid_lat: np.ndarray, grid_lon: np.ndarray, threshold_db: float) -> dict:
         """死角検知（NumPy版）"""
         val_filled = np.nan_to_num(grid_val, nan=0.0)
-        # 音は届いているが弱い場所、または計算範囲内で音がない場所
         silent_mask = (val_filled < threshold_db)
         
         y_idxs, x_idxs = np.where(silent_mask)
@@ -113,7 +111,6 @@ class IntelligentPlanner:
         if len(y_idxs) == 0:
             return None
 
-        # 重心を計算
         cy = np.mean(y_idxs)
         cx = np.mean(x_idxs)
         
@@ -129,8 +126,6 @@ class IntelligentPlanner:
 
     @staticmethod
     def generate_gemini_prompt(query: str, speakers: List[dict], blind_spot: dict, L0: float) -> str:
-        # トークン節約のため、スピーカーリストが多すぎる場合は間引くか重要情報のみにする
-        # ここでは全量渡すが、実運用では近隣のみに絞るのがベスト
         spk_list_str = "\n".join([f"- {s['label']}: ({s['lat']:.5f}, {s['lon']:.5f}) {s['direction']}°" for s in speakers])
         
         blind_info = ""
@@ -211,35 +206,46 @@ def render_sidebar():
         st.rerun()
 
 def call_gemini_api_robust(prompt):
-    """リトライ機能付きAPI呼び出し"""
+    """リトライ機能付きAPI呼び出し (Gemini 2.0 Experimental)"""
     api_key = st.secrets["general"].get("api_key")
     if not api_key:
         st.error("SecretsにAPIキーが設定されていません。")
         return None
     
-    # モデルを安定版に変更
-    model_name = "gemini-1.5-flash"
+    # 1.5がエラーのため、最新の実験版(2.0)を使用
+    # モデルID: gemini-2.0-flash-exp (Googleドキュメント準拠)
+    model_name = "gemini-2.0-flash-exp" 
+    
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     
-    max_retries = 3
+    # 2.0-expはレート制限がきつい場合があるためリトライ多めに設定
+    max_retries = 5 
     for attempt in range(max_retries):
         try:
             res = requests.post(url, json=payload, timeout=30)
             
-            # レート制限 (429) の場合
+            # レート制限 (429) 対策
             if res.status_code == 429:
-                wait_time = 2 ** (attempt + 1) # 2秒, 4秒, 8秒...
-                st.toast(f"アクセス集中につき待機中... ({wait_time}s)", icon="⏳")
+                wait_time = 2 ** (attempt + 1) # 2, 4, 8, 16秒...
+                st.toast(f"AIアクセス集中: {wait_time}秒待機して再試行します...", icon="⏳")
                 time.sleep(wait_time)
                 continue
-                
+            
             res.raise_for_status()
-            return res.json()['candidates'][0]['content']['parts'][0]['text']
+            
+            # 応答チェック
+            data = res.json()
+            if 'candidates' in data and len(data['candidates']) > 0:
+                return data['candidates'][0]['content']['parts'][0]['text']
+            else:
+                st.warning("AIからの応答が空でした。別の質問で試してください。")
+                return None
             
         except requests.exceptions.HTTPError as e:
+            # 400番台以外のエラー、またはリトライ切れ
             if attempt == max_retries - 1:
-                st.error(f"APIエラー (最終): {e}")
+                st.error(f"APIエラー ({model_name}): {e}")
                 return None
         except Exception as e:
             st.error(f"通信エラー: {e}")
@@ -271,8 +277,7 @@ def main():
     if st.session_state.speakers:
         lats = [s['lat'] for s in st.session_state.speakers]
         lons = [s['lon'] for s in st.session_state.speakers]
-        # NaNチェック
-        if np.isnan(lats).any() or np.isnan(lons).any():
+        if not lats or np.isnan(lats).any() or np.isnan(lons).any():
              center_lat, center_lon = MAP_CENTER
              lat_min, lat_max = center_lat-0.02, center_lat+0.02
              lon_min, lon_max = center_lon-0.02, center_lon+0.02
@@ -401,7 +406,7 @@ def main():
             pitch=0
         )
         
-        # Mapboxスタイルではなく、標準のCartoDB Darkを使用（APIキー不要・確実）
+        # APIキー不要のダークマップを使用
         st.pydeck_chart(pdk.Deck(
             map_style=pdk.map_styles.CARTO_DARK,
             initial_view_state=view_state,
@@ -416,7 +421,7 @@ def main():
         
         with c_ai_1:
             st.subheader("AI コンサルタント")
-            st.info("AIは現在のマップ状況と地形知識を用いて、最適な追加設置場所を提案します。")
+            st.info("Gemini 2.0 Flash (Experimental) を使用して分析します。")
             user_query = st.text_area("指示・条件", "死角を解消するための最適な場所を1つ提案して。", height=100)
             
             if st.button("🚀 AIに配置案を作成させる"):
@@ -424,7 +429,7 @@ def main():
                     prompt = IntelligentPlanner.generate_gemini_prompt(
                         user_query, st.session_state.speakers, blind_spot, params["L0"]
                     )
-                    # 堅牢なAPI呼び出しに変更
+                    # 堅牢なAPI呼び出し
                     response_text = call_gemini_api_robust(prompt)
                     
                     if response_text:
