@@ -1,6 +1,7 @@
 import math
 import io
 import re
+import time
 from typing import List, Tuple, Dict, Any
 
 import numpy as np
@@ -10,8 +11,9 @@ import streamlit as st
 import pydeck as pdk
 
 # ------------------ 設定・定数 ------------------
-APP_TITLE    = "上島町 防災無線AI配置シミュレーター (Light Ver.)"
-MAP_CENTER   = (34.253, 133.205) # 上島町付近
+APP_TITLE    = "上島町 防災無線AI配置シミュレーター (God Mode)"
+# 上島町（弓削島）付近の座標
+MAP_CENTER   = (34.253, 133.205)
 DEFAULT_ZOOM = 11.5
 
 # デザイン設定
@@ -21,52 +23,28 @@ ST_PAGE_CONFIG = {
     "initial_sidebar_state": "expanded"
 }
 
-# 視認性重視のCSS (白背景・黒文字)
 CUSTOM_CSS = """
 <style>
-    /* 全体のフォントと背景 */
-    .stApp { background-color: #FFFFFF; color: #333333; }
-    
-    /* メトリクス表示の装飾 (明るいグレー背景) */
+    .stApp { background-color: #0e1117; color: #FAFAFA; }
     div[data-testid="metric-container"] {
-        background-color: #F0F2F6;
-        border: 1px solid #D1D5DB;
+        background-color: #262730;
+        border: 1px solid #41424C;
         padding: 15px;
         border-radius: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    div[data-testid="metric-container"] label {
-        color: #555555; /* ラベル色 */
-    }
-    div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
-        color: #000000; /* 数値色 */
-    }
-    
-    /* ボタンのスタイル */
     div.stButton > button {
         width: 100%;
         border-radius: 8px;
         font-weight: bold;
-        border: 1px solid #4CAF50;
-        color: #4CAF50;
-        background-color: white;
         transition: all 0.3s;
     }
     div.stButton > button:hover {
-        background-color: #4CAF50;
-        color: white;
         transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(76, 175, 80, 0.2);
+        box-shadow: 0 4px 12px rgba(0,255,100,0.2);
     }
-    
-    /* タイトル周り */
-    h1 { font-family: 'Helvetica Neue', sans-serif; font-weight: 700; color: #2E7D32; }
-    h3 { border-left: 5px solid #2E7D32; padding-left: 10px; color: #333; }
-    
-    /* サイドバーの微調整 */
-    [data-testid="stSidebar"] {
-        background-color: #F8F9FA;
-    }
+    h1 { font-family: 'Helvetica Neue', sans-serif; font-weight: 700; color: #00FF94; }
+    h3 { border-left: 5px solid #00FF94; padding-left: 10px; }
 </style>
 """
 
@@ -127,17 +105,18 @@ class IntelligentPlanner:
     def find_blind_spot(grid_val: np.ndarray, grid_lat: np.ndarray, grid_lon: np.ndarray, threshold_db: float) -> dict:
         """死角検知（NumPy版）"""
         val_filled = np.nan_to_num(grid_val, nan=0.0)
-        silent_mask = (val_filled > 0) & (val_filled < threshold_db)
+        # 音は届いているが弱い場所、または計算範囲内で音がない場所
+        silent_mask = (val_filled < threshold_db)
+        
         y_idxs, x_idxs = np.where(silent_mask)
         
         if len(y_idxs) == 0:
-            y_idxs, x_idxs = np.where(val_filled == 0)
-            
-        if len(y_idxs) == 0:
             return None
 
+        # 重心を計算
         cy = np.mean(y_idxs)
         cx = np.mean(x_idxs)
+        
         lat_idx, lon_idx = int(cy), int(cx)
         lat_idx = min(lat_idx, grid_lat.shape[0]-1)
         lon_idx = min(lon_idx, grid_lat.shape[1]-1)
@@ -150,29 +129,32 @@ class IntelligentPlanner:
 
     @staticmethod
     def generate_gemini_prompt(query: str, speakers: List[dict], blind_spot: dict, L0: float) -> str:
-        spk_list = "\n".join([f"- {s['label']}: ({s['lat']:.5f}, {s['lon']:.5f}) {s['direction']}°" for s in speakers])
+        # トークン節約のため、スピーカーリストが多すぎる場合は間引くか重要情報のみにする
+        # ここでは全量渡すが、実運用では近隣のみに絞るのがベスト
+        spk_list_str = "\n".join([f"- {s['label']}: ({s['lat']:.5f}, {s['lon']:.5f}) {s['direction']}°" for s in speakers])
         
         blind_info = ""
         if blind_spot:
             blind_info = (
-                f"\n【システム分析による重要死角】\n"
+                f"\n【システム分析による重要死角重心】\n"
                 f"緯度: {blind_spot['lat']:.6f}, 経度: {blind_spot['lon']:.6f} 付近\n"
+                f"このエリアは現在、十分な音圧が確保されていない空白地帯の中心です。\n"
             )
 
         return (
             "あなたは日本の地方自治体（上島町）の防災無線計画を支援する「高度防災コンサルタントAI」です。\n"
-            "学習済みの地理情報と、以下のシミュレーション結果を統合して回答してください。\n\n"
+            "地形、集落の分布、避難経路などの地理的知識（あなたの学習データ）と、以下のシミュレーション結果を統合して回答してください。\n\n"
             "## 現状の配置\n"
-            f"{spk_list}\n"
+            f"{spk_list_str}\n"
             f"出力音圧: {L0}dB\n"
             f"{blind_info}\n"
             "## ユーザーの指示\n"
             f"{query}\n\n"
             "## ミッション\n"
-            "1. 死角の位置が地理的に設置可能か（海上や断崖でないか）判定。\n"
-            "2. 設置不可能な場合、現実的な代替地点を提案。\n"
-            "3. 新設する場合の最適な「緯度」「経度」「方向(0-360)」「推奨理由」を回答。\n"
-            "4. 回答の最後に必ずJSON形式で提案座標を出力。\n"
+            "1. 上記の「重要死角」の位置が、地理的に設置可能か（海上や断崖絶壁でないか）判定してください。\n"
+            "2. もし設置不可能な場合、近くの道路沿いや施設など、現実的な代替地点を提案してください。\n"
+            "3. 新設する場合の最適な「緯度」「経度」「方向(0-360)」「推奨理由」を答えてください。\n"
+            "4. 回答の最後に必ずJSON形式で提案座標を出力してください。\n"
             "例: ```json\n{\"lat\": 34.123, \"lon\": 133.456, \"direction\": 180, \"label\": \"AI提案地点\"}\n```"
         )
 
@@ -183,21 +165,25 @@ def render_sidebar():
     
     uploaded_file = st.sidebar.file_uploader("CSVインポート", type="csv")
     if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        if {'latitude', 'longitude'}.issubset(df.columns):
-            new_spks = []
-            for _, row in df.iterrows():
-                new_spks.append({
-                    "lat": row["latitude"], "lon": row["longitude"],
-                    "label": row.get("label", "No Name"),
-                    "direction": SoundPhysics.parse_direction(row.get("direction", 0))
-                })
-            st.session_state.speakers = new_spks
-            st.toast(f"{len(new_spks)}件読み込み完了", icon="📂")
+        try:
+            df = pd.read_csv(uploaded_file)
+            required = {'latitude', 'longitude'}
+            if required.issubset(df.columns):
+                new_spks = []
+                for _, row in df.iterrows():
+                    new_spks.append({
+                        "lat": row["latitude"], "lon": row["longitude"],
+                        "label": row.get("label", "No Name"),
+                        "direction": SoundPhysics.parse_direction(row.get("direction", 0))
+                    })
+                st.session_state.speakers = new_spks
+                st.toast(f"{len(new_spks)}件のデータを読み込みました", icon="📂")
+        except Exception as e:
+            st.sidebar.error(f"ファイル読み込みエラー: {e}")
 
     st.sidebar.divider()
     
-    with st.sidebar.expander("📡 音響パラメータ", expanded=False):
+    with st.sidebar.expander("📡 音響パラメータ調整", expanded=False):
         L0 = st.slider("出力音圧 (dB)", 70, 130, 85)
         r_max = st.slider("最大到達距離 (m)", 100, 3000, 800)
         beam = st.slider("指向性ビーム幅 (度)", 30, 360, 120)
@@ -212,7 +198,7 @@ def render_sidebar():
         lat = c1.number_input("緯度", value=MAP_CENTER[0], format="%.6f")
         lon = c2.number_input("経度", value=MAP_CENTER[1], format="%.6f")
         label_txt = st.text_input("名称", "新規スピーカー")
-        direct = st.number_input("方向", 0, 360, 0)
+        direct = st.number_input("方向 (度)", 0, 360, 0)
         if st.form_submit_button("追加"):
             st.session_state.speakers.append({
                 "lat": lat, "lon": lon, "label": label_txt, "direction": direct
@@ -224,20 +210,41 @@ def render_sidebar():
         st.session_state.proposals = []
         st.rerun()
 
-def call_gemini_api(prompt):
+def call_gemini_api_robust(prompt):
+    """リトライ機能付きAPI呼び出し"""
     api_key = st.secrets["general"].get("api_key")
     if not api_key:
-        st.error("SecretsにAPIキーがありません")
+        st.error("SecretsにAPIキーが設定されていません。")
         return None
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        res = requests.post(url, json=payload, timeout=30)
-        res.raise_for_status()
-        return res.json()['candidates'][0]['content']['parts'][0]['text']
-    except Exception as e:
-        st.error(f"AI通信エラー: {e}")
-        return None
+    
+    # モデルを安定版に変更
+    model_name = "gemini-1.5-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            res = requests.post(url, json=payload, timeout=30)
+            
+            # レート制限 (429) の場合
+            if res.status_code == 429:
+                wait_time = 2 ** (attempt + 1) # 2秒, 4秒, 8秒...
+                st.toast(f"アクセス集中につき待機中... ({wait_time}s)", icon="⏳")
+                time.sleep(wait_time)
+                continue
+                
+            res.raise_for_status()
+            return res.json()['candidates'][0]['content']['parts'][0]['text']
+            
+        except requests.exceptions.HTTPError as e:
+            if attempt == max_retries - 1:
+                st.error(f"APIエラー (最終): {e}")
+                return None
+        except Exception as e:
+            st.error(f"通信エラー: {e}")
+            return None
+    return None
 
 # ------------------ メイン処理 ------------------
 
@@ -260,12 +267,21 @@ def main():
     params = st.session_state.params
     resolution = 100
     
+    # 範囲決定
     if st.session_state.speakers:
         lats = [s['lat'] for s in st.session_state.speakers]
         lons = [s['lon'] for s in st.session_state.speakers]
-        lat_min, lat_max = min(lats)-0.02, max(lats)+0.02
-        lon_min, lon_max = min(lons)-0.02, max(lons)+0.02
+        # NaNチェック
+        if np.isnan(lats).any() or np.isnan(lons).any():
+             center_lat, center_lon = MAP_CENTER
+             lat_min, lat_max = center_lat-0.02, center_lat+0.02
+             lon_min, lon_max = center_lon-0.02, center_lon+0.02
+        else:
+            center_lat, center_lon = np.mean(lats), np.mean(lons)
+            lat_min, lat_max = min(lats)-0.02, max(lats)+0.02
+            lon_min, lon_max = min(lons)-0.02, max(lons)+0.02
     else:
+        center_lat, center_lon = MAP_CENTER
         lat_min, lat_max = MAP_CENTER[0]-0.02, MAP_CENTER[0]+0.02
         lon_min, lon_max = MAP_CENTER[1]-0.02, MAP_CENTER[1]+0.02
 
@@ -275,23 +291,26 @@ def main():
         indexing="ij"
     )
     
+    # 音響計算
     sound_grid = SoundPhysics.compute_grid(
         st.session_state.speakers, 
         params["L0"], params["r_max"], params["beam"], 
         grid_lat, grid_lon
     )
     
+    # 死角計算
     blind_spot = IntelligentPlanner.find_blind_spot(sound_grid, grid_lat, grid_lon, threshold_db=60)
 
+    # 指標表示
     m1, m2, m3, m4 = st.columns(4)
     valid_cells = np.count_nonzero(~np.isnan(sound_grid))
     covered_cells = np.count_nonzero(np.nan_to_num(sound_grid, 0) >= 60)
     coverage_rate = (covered_cells / valid_cells * 100) if valid_cells > 0 else 0
     
     m1.metric("設置数", f"{len(st.session_state.speakers)} 基")
-    m2.metric("有効カバー率", f"{coverage_rate:.1f} %")
+    m2.metric("有効カバー率 (60dB以上)", f"{coverage_rate:.1f} %")
     m3.metric("最大到達距離", f"{params['r_max']} m")
-    m4.metric("死角検知", "あり" if blind_spot else "なし", delta_color="inverse" if blind_spot else "normal")
+    m4.metric("重要死角検知", "あり" if blind_spot else "なし", delta_color="inverse" if blind_spot else "normal")
 
     tab_map, tab_ai = st.tabs(["🗺️ シミュレーションマップ", "🤖 AI配置コンサルタント"])
 
@@ -305,7 +324,7 @@ def main():
         df_heat = pd.DataFrame(heatmap_data, columns=["lon", "lat", "weight"])
 
         layers = []
-        # ヒートマップ層 (色調整済み)
+        # ヒートマップ
         layers.append(pdk.Layer(
             "HeatmapLayer",
             data=df_heat,
@@ -314,39 +333,38 @@ def main():
             radius_pixels=40,
             intensity=1,
             threshold=0.3,
-            opacity=0.5, # 白背景でも見えるように調整
+            opacity=0.6,
             color_range=[
-                [0, 0, 255, 100],     # 青
-                [0, 255, 0, 150],     # 緑
-                [255, 255, 0, 180],   # 黄
-                [255, 0, 0, 200]      # 赤
+                [0, 255, 255, 50],
+                [0, 255, 0, 100],
+                [255, 255, 0, 150],
+                [255, 0, 0, 200]
             ]
         ))
         
+        # スピーカー
         df_spk = pd.DataFrame(st.session_state.speakers)
         if not df_spk.empty:
-            # スピーカーマーカー (白背景で見える濃い青に)
             layers.append(pdk.Layer(
                 "ScatterplotLayer",
                 data=df_spk,
                 get_position=["lon", "lat"],
-                get_fill_color=[0, 80, 200], # 濃い青
+                get_fill_color=[255, 255, 255],
                 get_radius=50,
                 pickable=True,
             ))
-            # ラベル (黒文字)
             layers.append(pdk.Layer(
                 "TextLayer",
                 data=df_spk,
                 get_position=["lon", "lat"],
                 get_text="label",
-                get_size=15,
-                get_color=[0, 0, 0], # 黒
-                get_weight=700,
+                get_size=14,
+                get_color=[255, 255, 255],
                 get_alignment_baseline="'bottom'",
                 get_pixel_offset=[0, -10]
             ))
 
+        # 死角
         if blind_spot:
             df_blind = pd.DataFrame([blind_spot])
             layers.append(pdk.Layer(
@@ -354,58 +372,60 @@ def main():
                 data=df_blind,
                 get_position=["lon", "lat"],
                 get_fill_color=[200, 50, 200],
-                get_line_color=[0, 0, 0], # 枠線を黒に
+                get_line_color=[255, 255, 255],
                 get_line_width=2,
                 get_radius=100,
                 stroked=True,
                 pickable=True,
             ))
             
+        # 提案
         if st.session_state.proposals:
              df_prop = pd.DataFrame(st.session_state.proposals)
              layers.append(pdk.Layer(
                 "ScatterplotLayer",
                 data=df_prop,
                 get_position=["lon", "lat"],
-                get_fill_color=[0, 200, 100],
+                get_fill_color=[0, 255, 127],
                 get_radius=80,
                 pickable=True,
                 stroked=True,
-                get_line_color=[0,0,0],
+                get_line_color=[255,255,255],
                 get_line_width=3
             ))
 
         view_state = pdk.ViewState(
-            latitude=np.mean(lats) if st.session_state.speakers else MAP_CENTER[0],
-            longitude=np.mean(lons) if st.session_state.speakers else MAP_CENTER[1],
+            latitude=center_lat,
+            longitude=center_lon,
             zoom=DEFAULT_ZOOM,
             pitch=0
         )
         
-        # マップスタイルをライトモード(light-v9)に変更
+        # Mapboxスタイルではなく、標準のCartoDB Darkを使用（APIキー不要・確実）
         st.pydeck_chart(pdk.Deck(
-            map_style="mapbox://styles/mapbox/light-v9",
+            map_style=pdk.map_styles.CARTO_DARK,
             initial_view_state=view_state,
             layers=layers,
             tooltip={"text": "{label}\n音圧: {weight}dB"}
         ))
         
-        st.caption("紫: 死角重心 | 緑: AI提案 | マップスタイル: Light Mode")
+        st.caption("紫の円: 音圧不足エリアの中心（自動検知） | 緑の円: AI提案地点")
 
     with tab_ai:
         c_ai_1, c_ai_2 = st.columns([1, 2])
         
         with c_ai_1:
             st.subheader("AI コンサルタント")
-            st.info("AIが地形と音響シミュレーションを解析し、最適な場所を提案します。")
+            st.info("AIは現在のマップ状況と地形知識を用いて、最適な追加設置場所を提案します。")
             user_query = st.text_area("指示・条件", "死角を解消するための最適な場所を1つ提案して。", height=100)
             
-            if st.button("🚀 配置案を作成"):
-                with st.spinner("AI解析中..."):
+            if st.button("🚀 AIに配置案を作成させる"):
+                with st.spinner("AIが地形と音響シミュレーションを解析中..."):
                     prompt = IntelligentPlanner.generate_gemini_prompt(
                         user_query, st.session_state.speakers, blind_spot, params["L0"]
                     )
-                    response_text = call_gemini_api(prompt)
+                    # 堅牢なAPI呼び出しに変更
+                    response_text = call_gemini_api_robust(prompt)
                     
                     if response_text:
                         st.session_state.last_response = response_text
@@ -415,9 +435,9 @@ def main():
                                 import json
                                 prop_data = json.loads(json_match.group(1))
                                 st.session_state.proposals = [prop_data]
-                                st.success("提案を作成しました")
+                                st.success("提案地点をマップに追加しました！")
                             except:
-                                st.warning("座標抽出失敗")
+                                st.warning("座標自動抽出に失敗")
         
         with c_ai_2:
             st.subheader("AI 分析レポート")
@@ -425,13 +445,13 @@ def main():
                 st.markdown(st.session_state.last_response)
                 if st.session_state.proposals:
                     p = st.session_state.proposals[0]
-                    if st.button("この提案を採用する"):
+                    if st.button("この提案を採用して配置する"):
                         st.session_state.speakers.append(p)
                         st.session_state.proposals = []
                         st.session_state.last_response = ""
                         st.rerun()
             else:
-                st.write("ここに分析結果が表示されます。")
+                st.write("ここにAIからの分析結果が表示されます。")
 
 if __name__ == "__main__":
     main()
