@@ -10,8 +10,16 @@ import requests
 import streamlit as st
 import pydeck as pdk
 
+# Foliumのインポート試行（マップクリック機能用）
+try:
+    import folium
+    from streamlit_folium import st_folium
+    HAS_FOLIUM = True
+except ImportError:
+    HAS_FOLIUM = False
+
 # ------------------ 設定・定数 ------------------
-APP_TITLE    = "上島町 防災無線AI配置シミュレーター (God Mode)"
+APP_TITLE    = "上島町 防災無線AI配置シミュレーター (God Mode v2)"
 MAP_CENTER   = (34.253, 133.205) # 上島町（弓削島）付近
 DEFAULT_ZOOM = 11.5
 
@@ -25,6 +33,7 @@ ST_PAGE_CONFIG = {
 CUSTOM_CSS = """
 <style>
     .stApp { background-color: #0e1117; color: #FAFAFA; }
+    /* Metric Card */
     div[data-testid="metric-container"] {
         background-color: #262730;
         border: 1px solid #41424C;
@@ -32,6 +41,7 @@ CUSTOM_CSS = """
         border-radius: 10px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
+    /* Buttons */
     div.stButton > button {
         width: 100%;
         border-radius: 8px;
@@ -42,8 +52,24 @@ CUSTOM_CSS = """
         transform: translateY(-2px);
         box-shadow: 0 4px 12px rgba(0,255,100,0.2);
     }
+    /* Headers */
     h1 { font-family: 'Helvetica Neue', sans-serif; font-weight: 700; color: #00FF94; }
     h3 { border-left: 5px solid #00FF94; padding-left: 10px; }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #1E1E1E;
+        border-radius: 5px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #00FF94 !important;
+        color: #000000 !important;
+    }
 </style>
 """
 
@@ -158,6 +184,7 @@ class IntelligentPlanner:
 def render_sidebar():
     st.sidebar.title("🛠 設定パネル")
     
+    # CSVインポート
     uploaded_file = st.sidebar.file_uploader("CSVインポート", type="csv")
     if uploaded_file:
         try:
@@ -178,6 +205,7 @@ def render_sidebar():
 
     st.sidebar.divider()
     
+    # パラメータ設定
     with st.sidebar.expander("📡 音響パラメータ調整", expanded=False):
         L0 = st.slider("出力音圧 (dB)", 70, 130, 85)
         r_max = st.slider("最大到達距離 (m)", 100, 3000, 800)
@@ -187,69 +215,56 @@ def render_sidebar():
 
     st.sidebar.divider()
     
-    with st.sidebar.form("add_speaker"):
-        st.write("手動追加")
-        c1, c2 = st.columns(2)
-        lat = c1.number_input("緯度", value=MAP_CENTER[0], format="%.6f")
-        lon = c2.number_input("経度", value=MAP_CENTER[1], format="%.6f")
-        label_txt = st.text_input("名称", "新規スピーカー")
-        direct = st.number_input("方向 (度)", 0, 360, 0)
-        if st.form_submit_button("追加"):
-            st.session_state.speakers.append({
-                "lat": lat, "lon": lon, "label": label_txt, "direction": direct
-            })
-            st.rerun()
-
+    # リセットボタン
     if st.sidebar.button("全データクリア", type="primary"):
         st.session_state.speakers = []
         st.session_state.proposals = []
         st.rerun()
 
 def call_gemini_api_robust(prompt):
-    """リトライ機能付きAPI呼び出し (Gemini 2.0 Experimental)"""
+    """リトライ機能付きAPI呼び出し (タイムアウト対策版)"""
     api_key = st.secrets["general"].get("api_key")
     if not api_key:
         st.error("SecretsにAPIキーが設定されていません。")
         return None
     
-    # 1.5がエラーのため、最新の実験版(2.0)を使用
-    # モデルID: gemini-2.0-flash-exp (Googleドキュメント準拠)
     model_name = "gemini-2.0-flash-exp" 
-    
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     
-    # 2.0-expはレート制限がきつい場合があるためリトライ多めに設定
-    max_retries = 5 
+    # タイムアウトを120秒に設定
+    TIMEOUT_SEC = 120 
+    max_retries = 3 
+    
     for attempt in range(max_retries):
         try:
-            res = requests.post(url, json=payload, timeout=30)
+            res = requests.post(url, json=payload, timeout=TIMEOUT_SEC)
             
-            # レート制限 (429) 対策
+            # レート制限 (429)
             if res.status_code == 429:
-                wait_time = 2 ** (attempt + 1) # 2, 4, 8, 16秒...
+                wait_time = 2 ** (attempt + 1)
                 st.toast(f"AIアクセス集中: {wait_time}秒待機して再試行します...", icon="⏳")
                 time.sleep(wait_time)
                 continue
             
             res.raise_for_status()
             
-            # 応答チェック
             data = res.json()
             if 'candidates' in data and len(data['candidates']) > 0:
                 return data['candidates'][0]['content']['parts'][0]['text']
             else:
-                st.warning("AIからの応答が空でした。別の質問で試してください。")
                 return None
             
-        except requests.exceptions.HTTPError as e:
-            # 400番台以外のエラー、またはリトライ切れ
-            if attempt == max_retries - 1:
-                st.error(f"APIエラー ({model_name}): {e}")
-                return None
-        except Exception as e:
-            st.error(f"通信エラー: {e}")
+        except requests.exceptions.Timeout:
+            st.error("AIからの応答がタイムアウトしました (120秒)。")
             return None
+        except Exception as e:
+            # 最後の試行でなければログだけ出してリトライ
+            if attempt == max_retries - 1:
+                st.error(f"AIエラー: {e}")
+                return None
+            time.sleep(2)
+            
     return None
 
 # ------------------ メイン処理 ------------------
@@ -258,6 +273,7 @@ def main():
     st.set_page_config(**ST_PAGE_CONFIG)
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
+    # セッション初期化
     if "speakers" not in st.session_state:
         st.session_state.speakers = [
             {"lat": 34.253, "lon": 133.205, "label": "役場本庁舎", "direction": 0},
@@ -265,6 +281,9 @@ def main():
         ]
     if "proposals" not in st.session_state:
         st.session_state.proposals = []
+    # マップクリック座標用
+    if "clicked_coords" not in st.session_state:
+        st.session_state.clicked_coords = None
 
     render_sidebar()
 
@@ -277,7 +296,7 @@ def main():
     if st.session_state.speakers:
         lats = [s['lat'] for s in st.session_state.speakers]
         lons = [s['lon'] for s in st.session_state.speakers]
-        if not lats or np.isnan(lats).any() or np.isnan(lons).any():
+        if not lats:
              center_lat, center_lon = MAP_CENTER
              lat_min, lat_max = center_lat-0.02, center_lat+0.02
              lon_min, lon_max = center_lon-0.02, center_lon+0.02
@@ -296,17 +315,16 @@ def main():
         indexing="ij"
     )
     
-    # 音響計算
+    # 計算実行
     sound_grid = SoundPhysics.compute_grid(
         st.session_state.speakers, 
         params["L0"], params["r_max"], params["beam"], 
         grid_lat, grid_lon
     )
     
-    # 死角計算
     blind_spot = IntelligentPlanner.find_blind_spot(sound_grid, grid_lat, grid_lon, threshold_db=60)
 
-    # 指標表示
+    # メトリクス
     m1, m2, m3, m4 = st.columns(4)
     valid_cells = np.count_nonzero(~np.isnan(sound_grid))
     covered_cells = np.count_nonzero(np.nan_to_num(sound_grid, 0) >= 60)
@@ -317,8 +335,10 @@ def main():
     m3.metric("最大到達距離", f"{params['r_max']} m")
     m4.metric("重要死角検知", "あり" if blind_spot else "なし", delta_color="inverse" if blind_spot else "normal")
 
-    tab_map, tab_ai = st.tabs(["🗺️ シミュレーションマップ", "🤖 AI配置コンサルタント"])
+    # --- タブ構成 ---
+    tab_map, tab_add, tab_ai = st.tabs(["🗺️ シミュレーション", "📍 スピーカー追加", "🤖 AIコンサルタント"])
 
+    # 1. シミュレーションマップ (PyDeck)
     with tab_map:
         heatmap_data = []
         mask = ~np.isnan(sound_grid)
@@ -329,7 +349,6 @@ def main():
         df_heat = pd.DataFrame(heatmap_data, columns=["lon", "lat", "weight"])
 
         layers = []
-        # ヒートマップ
         layers.append(pdk.Layer(
             "HeatmapLayer",
             data=df_heat,
@@ -339,15 +358,9 @@ def main():
             intensity=1,
             threshold=0.3,
             opacity=0.6,
-            color_range=[
-                [0, 255, 255, 50],
-                [0, 255, 0, 100],
-                [255, 255, 0, 150],
-                [255, 0, 0, 200]
-            ]
+            color_range=[[0, 255, 255, 50], [0, 255, 0, 100], [255, 255, 0, 150], [255, 0, 0, 200]]
         ))
         
-        # スピーカー
         df_spk = pd.DataFrame(st.session_state.speakers)
         if not df_spk.empty:
             layers.append(pdk.Layer(
@@ -369,7 +382,6 @@ def main():
                 get_pixel_offset=[0, -10]
             ))
 
-        # 死角
         if blind_spot:
             df_blind = pd.DataFrame([blind_spot])
             layers.append(pdk.Layer(
@@ -384,7 +396,6 @@ def main():
                 pickable=True,
             ))
             
-        # 提案
         if st.session_state.proposals:
              df_prop = pd.DataFrame(st.session_state.proposals)
              layers.append(pdk.Layer(
@@ -399,33 +410,71 @@ def main():
                 get_line_width=3
             ))
 
-        view_state = pdk.ViewState(
-            latitude=center_lat,
-            longitude=center_lon,
-            zoom=DEFAULT_ZOOM,
-            pitch=0
-        )
+        view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=DEFAULT_ZOOM, pitch=0)
         
-        # APIキー不要のダークマップを使用
         st.pydeck_chart(pdk.Deck(
             map_style=pdk.map_styles.CARTO_DARK,
             initial_view_state=view_state,
             layers=layers,
             tooltip={"text": "{label}\n音圧: {weight}dB"}
         ))
-        
-        st.caption("紫の円: 音圧不足エリアの中心（自動検知） | 緑の円: AI提案地点")
 
+    # 2. 直感的な追加マップ (Folium)
+    with tab_add:
+        c_add_L, c_add_R = st.columns([2, 1])
+        
+        with c_add_L:
+            st.markdown("#### 1. 地図をクリックして場所を指定")
+            if HAS_FOLIUM:
+                # 地図表示
+                m = folium.Map(location=[center_lat, center_lon], zoom_start=13)
+                # 既存スピーカーを表示
+                for s in st.session_state.speakers:
+                    folium.Marker(
+                        [s['lat'], s['lon']], 
+                        popup=s['label'],
+                        icon=folium.Icon(color="green", icon="volume-up")
+                    ).add_to(m)
+                
+                # クリックイベント取得
+                output = st_folium(m, width="100%", height=400, return_last_object_clicked=True)
+                
+                if output and output.get("last_clicked"):
+                    st.session_state.clicked_coords = output["last_clicked"]
+            else:
+                st.warning("`folium` がインストールされていないため、マップクリック機能は無効です。手動で入力してください。")
+        
+        with c_add_R:
+            st.markdown("#### 2. 詳細を入力して追加")
+            with st.form("click_add_form"):
+                # クリックされた座標があればそれを初期値に
+                init_lat = st.session_state.clicked_coords["lat"] if st.session_state.clicked_coords else center_lat
+                init_lon = st.session_state.clicked_coords["lng"] if st.session_state.clicked_coords else center_lon
+                
+                in_lat = st.number_input("緯度", value=float(init_lat), format="%.6f")
+                in_lon = st.number_input("経度", value=float(init_lon), format="%.6f")
+                in_label = st.text_input("名称", value="新規地点")
+                in_dir = st.number_input("方向 (度)", 0, 360, 0)
+                
+                if st.form_submit_button("この地点に追加", type="primary"):
+                    st.session_state.speakers.append({
+                        "lat": in_lat, "lon": in_lon, "label": in_label, "direction": in_dir
+                    })
+                    st.success("追加しました！シミュレーションタブで確認してください。")
+                    st.session_state.clicked_coords = None # リセット
+                    # st.rerun() はフォーム内だと警告が出る場合があるので外に出すか、自然更新に任せる
+
+    # 3. AIコンサルタント (タイムアウト対策済み)
     with tab_ai:
         c_ai_1, c_ai_2 = st.columns([1, 2])
         
         with c_ai_1:
             st.subheader("AI コンサルタント")
-            st.info("Gemini 2.0 Flash (Experimental) を使用して分析します。")
+            st.info("Gemini 2.0 Flash (Exp) が地形とシミュレーションを分析します。")
             user_query = st.text_area("指示・条件", "死角を解消するための最適な場所を1つ提案して。", height=100)
             
             if st.button("🚀 AIに配置案を作成させる"):
-                with st.spinner("AIが地形と音響シミュレーションを解析中..."):
+                with st.spinner("AIが地形解析中... (最大2分程度かかる場合があります)"):
                     prompt = IntelligentPlanner.generate_gemini_prompt(
                         user_query, st.session_state.speakers, blind_spot, params["L0"]
                     )
